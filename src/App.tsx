@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useWallet } from "./state";
 import { Activity } from "./ui/Activity";
 import { Buddy } from "./ui/Buddy";
+import { DoneFlash } from "./ui/DoneFlash";
 import { Gate } from "./ui/Gate";
 import { Home } from "./ui/Home";
 import { Brand } from "./ui/mark";
@@ -76,6 +77,7 @@ function Stage({
       <main className="phone">
         <div className={bare ? "screen bare" : "screen"}>{children}</div>
         {nav}
+        <DoneFlash />
         <Buddy />
       </main>
     </div>

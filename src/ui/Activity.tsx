@@ -4,6 +4,9 @@ import hemiIcon from "../assets/hemi.svg";
 import hemiEthIcon from "../assets/hemieth.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import vusdIcon from "../assets/vusd.svg";
+import usdtIcon from "../assets/usdt.svg";
+import vetroIcon from "../assets/vetro.svg";
+import wbtcIcon from "../assets/wbtc.svg";
 import { formatUnits, formatWhen } from "../lib/format";
 import { messageOf } from "../lib/errors";
 import { readBtcActivity, readHemiActivity, type ChainLeg, type ChainRow } from "../lib/hemi";
@@ -16,6 +19,9 @@ const ICONS: Record<string, string> = {
   hemiBTC: hemiBtcIcon,
   HEMI: hemiIcon,
   VUSD: vusdIcon,
+  Vetro: vetroIcon,
+  USDT: usdtIcon,
+  WBTC: wbtcIcon,
   ETH: hemiEthIcon,
 };
 
@@ -97,7 +103,7 @@ export function Activity() {
       {rows.length === 0 && !error && <p className="empty">No Bitcoin or Hemi transfers for these addresses yet.</p>}
       <div className="list">
         {rows.map((row) => {
-          const icon = row.title === "Swap"
+          const icon = row.title === "Swap" || row.title === "Add liquidity"
             ? row.legs.find((leg) => BigInt(leg.amount) < 0n)?.symbol ?? row.legs[0]?.symbol
             : row.legs[0]?.symbol;
           return (

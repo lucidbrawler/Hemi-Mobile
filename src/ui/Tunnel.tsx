@@ -4,7 +4,7 @@ import hemiBtcIcon from "../assets/hemibtc.svg";
 import { btcToSats, formatRemain, formatUnits, formatWhen, satsToBtc, shortAddr } from "../lib/format";
 import { messageOf } from "../lib/errors";
 import { estimateSpend, fetchUtxos, findBtcCredit } from "../lib/btc";
-import { btcTxUrl, hemiTxUrl, readBtcConfirmations, readHemiMined } from "../lib/hemi";
+import { btcTxUrl, hemiTxUrl, readBtcConfirmations, readDepositAcknowledged, readHemiMined } from "../lib/hemi";
 import { useWallet } from "../state";
 import type { TunnelRecord } from "../lib/storage";
 import { EthMoves, EthTunnel } from "./EthTunnel";
@@ -224,11 +224,14 @@ export function BtcMoves({ heading = true, openOnly = false }: { heading?: boole
   const w = useWallet();
   const [now, setNow] = useState(Date.now());
   const [confs, setConfs] = useState<Record<string, number | null>>({});
+  /** false once the vault state says this deposit is not minted yet. undefined until that read runs. */
+  const [acked, setAcked] = useState<Record<string, boolean | undefined>>({});
   const [mined, setMined] = useState<Record<string, boolean | null>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rows = w.tunnels.filter((row) => !openOnly || row.status === "broadcast");
   const markBtc = w.markBtc;
+  const stateAddress = w.vault?.stateAddress;
 
   const tracking = w.tunnels.some((row) => row.status === "broadcast");
   useEffect(() => {
@@ -244,14 +247,34 @@ export function BtcMoves({ heading = true, openOnly = false }: { heading?: boole
     if (deposits.length === 0 && withdraws.length === 0) return;
     const run = () => {
       void Promise.all(deposits.map(async (row) => {
+        // Ask the vault before confirmations. A finished mint must not flash the Mint button.
+        if (stateAddress) {
+          try {
+            const known = await readDepositAcknowledged(stateAddress, row.txHash);
+            if (known) {
+              if (live) markBtc(row.id, "minted");
+              return [row.id, null, true] as const;
+            }
+          } catch {
+            // A failed view leaves the manual mint available once confirmations are in.
+            try {
+              return [row.id, await readBtcConfirmations(row.txHash), false] as const;
+            } catch {
+              return [row.id, null, false] as const;
+            }
+          }
+        }
         try {
-          return [row.id, await readBtcConfirmations(row.txHash)] as const;
+          // undefined: the vault quote is not loaded, so the card waits instead of offering Mint.
+          const flag = stateAddress ? false : undefined;
+          return [row.id, await readBtcConfirmations(row.txHash), flag] as const;
         } catch {
-          return [row.id, null] as const;
+          return [row.id, null, stateAddress ? false : undefined] as const;
         }
       })).then((next) => {
         if (!live) return;
-        setConfs(Object.fromEntries(next));
+        setConfs(Object.fromEntries(next.map(([id, count]) => [id, count])));
+        setAcked(Object.fromEntries(next.map(([id, , known]) => [id, known])));
       });
       void Promise.all(withdraws.map(async (row) => {
         try {
@@ -275,7 +298,7 @@ export function BtcMoves({ heading = true, openOnly = false }: { heading?: boole
       live = false;
       window.clearInterval(poll);
     };
-  }, [w.tunnels, markBtc]);
+  }, [w.tunnels, markBtc, stateAddress]);
 
   if (rows.length === 0) return null;
 
@@ -289,6 +312,7 @@ export function BtcMoves({ heading = true, openOnly = false }: { heading?: boole
             row={row}
             now={now}
             confirmations={confs[row.id]}
+            acknowledged={acked[row.id]}
             need={w.vault?.confirmations ?? 6}
             mined={mined[row.id]}
             busy={busy === row.id}
@@ -311,6 +335,7 @@ function BtcMoveCard({
   row,
   now,
   confirmations,
+  acknowledged,
   need,
   mined,
   busy,
@@ -319,6 +344,8 @@ function BtcMoveCard({
   row: TunnelRecord;
   now: number;
   confirmations: number | null | undefined;
+  /** true: vault already minted. false: checked, not minted. undefined: not checked yet. */
+  acknowledged: boolean | undefined;
   need: number;
   mined: boolean | null | undefined;
   busy: boolean;
@@ -334,9 +361,9 @@ function BtcMoveCard({
 
   if (done) {
     spinning = false;
-    step = deposit ? "Done · hemiBTC mint submitted" : "Done · Bitcoin payout seen";
+    step = deposit ? "Done" : "Done · Bitcoin payout seen";
     message = deposit
-      ? "The mint transaction was sent. hemiBTC shows up after Hemi confirms it."
+      ? "The vault minted hemiBTC for this deposit."
       : "Bitcoin for this withdrawal showed up on the address you entered.";
     eta = formatWhen(row.createdAt);
   } else if (deposit) {
@@ -345,11 +372,15 @@ function BtcMoveCard({
       step = "Step 2 of 3 · Bitcoin confirmations";
       message = "Asking mempool.space how many confirmations this deposit has.";
       eta = "Checking…";
-    } else if (got >= need) {
+    } else if (got >= need && acknowledged === false) {
       canMint = true;
       step = "Step 3 of 3 · Mint hemiBTC";
       message = `${got} of ${need} Bitcoin confirmations are in. Minting is one Hemi transaction.`;
       eta = "Waiting on you";
+    } else if (got >= need) {
+      step = "Step 3 of 3 · Mint hemiBTC";
+      message = "Checking whether the vault already minted this deposit.";
+      eta = "Checking…";
     } else {
       step = "Step 2 of 3 · Bitcoin confirmations";
       message = got === 0

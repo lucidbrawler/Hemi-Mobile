@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import { formatUnits, formatWhen, parseUnits } from "../lib/format";
 import { messageOf } from "../lib/errors";
+import { celebrate } from "../lib/fx";
 import {
   STAKE_MIN_HEMI,
   STAKE_PRESETS,
+  type StakePosition,
   readStake,
   stakeNeedsApproval,
   stakeUnlockAt,
   stakeWeightLabel,
-  type StakePosition,
   type StakePresetId,
 } from "../lib/stake";
 import { useWallet } from "../state";
@@ -16,6 +17,19 @@ import { useWallet } from "../state";
 function unlockLabel(end: number): string {
   if (end <= 0) return "—";
   return formatWhen(end * 1000);
+}
+
+function readyRewards(positions: StakePosition[]): string {
+  const totals = new Map<string, { amount: bigint; decimals: number }>();
+  for (const position of positions) {
+    for (const reward of position.rewards ?? []) {
+      if (reward.amount <= 0n) continue;
+      const current = totals.get(reward.symbol) ?? { amount: 0n, decimals: reward.decimals };
+      current.amount += reward.amount;
+      totals.set(reward.symbol, current);
+    }
+  }
+  return [...totals].map(([symbol, row]) => `${formatUnits(row.amount, row.decimals)} ${symbol}`).join(" · ");
 }
 
 export function StakeSheet({ onClose }: { onClose: () => void }) {
@@ -72,6 +86,39 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
       live = false;
     };
   }, [parsed, wallet.hemiAddress]);
+
+  const owed = (positions ?? []).filter((position) => position.rewards?.some((reward) => reward.amount > 0n));
+  const readyText = readyRewards(owed);
+  const canClaim = owed.length > 0 && sure && !noGas && busy == null;
+  const claimLabel = busy === "claim"
+    ? "Claiming…"
+    : positions == null
+      ? "Checking rewards…"
+      : owed.length === 0
+        ? "No rewards yet"
+        : noGas
+          ? "Need ETH for gas"
+          : !sure
+            ? "Confirm on mainnet"
+            : "Claim rewards";
+
+  async function claimPositions(rows: StakePosition[]) {
+    if (rows.length === 0 || busy != null) return;
+    setBusy("claim");
+    setError(null);
+    try {
+      for (const position of rows) {
+        await w.stakeClaim(BigInt(position.tokenId));
+      }
+      celebrate("Rewards claimed.");
+      reload();
+    } catch (err) {
+      setError(messageOf(err));
+      reload();
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const ready = parsed != null && parsed >= STAKE_MIN_HEMI && (free == null || parsed <= free) && !noGas && sure && !busy;
   const label = busy === "approve"
@@ -182,6 +229,22 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
         </button>
 
         <div className="kicker" style={{ margin: "18px 0 10px" }}><span>Positions</span></div>
+        {positions != null && positions.length > 0 && (
+          <>
+            <div className="rowline">
+              <span>Ready to claim</span>
+              <b>{readyText || "None yet"}</b>
+            </div>
+            <button
+              className={canClaim ? "btn primary wide" : "btn wide swap-wait"}
+              type="button"
+              disabled={!canClaim}
+              onClick={() => void claimPositions(owed)}
+            >
+              {claimLabel}
+            </button>
+          </>
+        )}
         {positions == null && !error && <p className="empty">Loading positions…</p>}
         {positions?.length === 0 && <p className="empty">No veHEMI positions on this address yet.</p>}
         <div className="list">
@@ -217,14 +280,7 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
                       className="ghost"
                       type="button"
                       disabled={!sure || busy != null || noGas}
-                      onClick={() => {
-                        setBusy("claim");
-                        setError(null);
-                        void w.stakeClaim(BigInt(position.tokenId))
-                          .then(() => reload())
-                          .catch((err) => setError(messageOf(err)))
-                          .finally(() => setBusy(null));
-                      }}
+                      onClick={() => void claimPositions([position])}
                     >
                       {busy === "claim" ? "Claiming…" : "Claim"}
                     </button>

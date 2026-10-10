@@ -5,17 +5,21 @@ import ethIcon from "../assets/eth.svg";
 import hemiEthIcon from "../assets/hemieth.svg";
 import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
+import usdtIcon from "../assets/usdt.svg";
+import vetroIcon from "../assets/vetro.svg";
 import vusdIcon from "../assets/vusd.svg";
-import { ETH_EXPLORER, HEMIBTC, HEMI_TOKEN, VUSD } from "../chain";
+import wbtcIcon from "../assets/wbtc.svg";
+import { ETH_EXPLORER, HEMIBTC, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
 import { formatUnits, formatUsd, parseUnits, satsToBtc, shortAddr } from "../lib/format";
 import { btcAddressUrl, hemiAddressUrl } from "../lib/hemi";
 import { messageOf } from "../lib/errors";
 import { useWallet } from "../state";
+import { PoolSheet } from "./PoolSheet";
 import { StakeSheet } from "./StakeSheet";
 import { SwapSheet } from "./SwapSheet";
 
-type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "phrase" | "passkey" | "2fa";
-type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc";
+type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "pool" | "phrase" | "passkey" | "2fa";
+type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc" | "usdt";
 
 export function Home() {
   const w = useWallet();
@@ -70,7 +74,7 @@ export function Home() {
       <section className="card hemi-wallet">
         <div className="kicker"><span>Hemi wallet</span></div>
         <p className="hint">
-          Created with this phrase. Bitcoin you tunnel is minted here as {w.balances.symbol}. HEMI, VUSD, and ETH already on Hemi live on this address.
+          Created with this phrase. Bitcoin you tunnel is minted here as {w.balances.symbol}. HEMI, VUSD, Vetro, WBTC, USDT, and ETH already on Hemi live on this address.
         </p>
         <p className="addr">{wallet.hemiAddress}</p>
         <Holding
@@ -105,8 +109,33 @@ export function Home() {
           unit={w.balances.symbol}
           onClick={() => openToken("hemibtc", "send")}
         />
+        <Holding
+          icon={vetroIcon}
+          ticker="Vetro"
+          detail={`Vetro USD · 18 decimals · ${shortAddr(VETRO_USD, 6, 4)}`}
+          amount={w.balances.vetroWei == null ? "—" : formatUnits(w.balances.vetroWei, 18)}
+          unit="Vetro"
+          onClick={() => openToken("vetro", "send")}
+        />
+        <Holding
+          icon={wbtcIcon}
+          ticker="WBTC"
+          detail={`Wrapped BTC · 8 decimals · ${shortAddr(WBTC, 6, 4)}`}
+          amount={w.balances.wbtcSats == null ? "—" : formatUnits(w.balances.wbtcSats, 8)}
+          unit="WBTC"
+          onClick={() => openToken("wbtc", "send")}
+        />
+        <Holding
+          icon={usdtIcon}
+          ticker="USDT"
+          detail={`Stablecoin · 6 decimals · ${shortAddr(USDT, 6, 4)}`}
+          amount={w.balances.usdtRaw == null ? "—" : formatUnits(w.balances.usdtRaw, 6)}
+          unit="USDT"
+          onClick={() => openToken("usdt", "send")}
+        />
         <div className="actions">
           <button className="ghost" type="button" onClick={() => setSheet("stake")}>Stake HEMI</button>
+          <button className="ghost" type="button" onClick={() => setSheet("pool")}>Add liquidity</button>
         </div>
       </section>
 
@@ -183,6 +212,7 @@ export function Home() {
       )}
       {sheet === "swap" && <SwapSheet onClose={() => setSheet(null)} />}
       {sheet === "stake" && <StakeSheet onClose={() => setSheet(null)} />}
+      {sheet === "pool" && <PoolSheet onClose={() => setSheet(null)} />}
       {sheet === "phrase" && <Phrase onClose={() => setSheet(null)} />}
       {sheet === "passkey" && <EnablePasskey onClose={() => setSheet(null)} />}
       {sheet === "2fa" && <Enable2fa onClose={() => setSheet(null)} />}
@@ -283,7 +313,7 @@ function Receive({ onClose, initial }: { onClose: () => void; initial: "btc" | "
           title: "Receive on Hemi",
           address,
           explorer: hemiAddressUrl(address),
-          note: "This address receives ETH, HEMI, VUSD, and hemiBTC on Hemi.",
+          note: "This address receives ETH, HEMI, VUSD, Vetro, WBTC, USDT, and hemiBTC on Hemi.",
         };
 
   return (
@@ -356,55 +386,100 @@ function TokenSheet({
     { id: "eth", label: "ETH" },
     { id: "hemi", label: b.hemiTokenSymbol },
     { id: "vusd", label: b.vusdSymbol },
+    { id: "vetro", label: "Vetro" },
+    { id: "usdt", label: "USDT" },
+    { id: "wbtc", label: "WBTC" },
     { id: "hemibtc", label: b.symbol },
   ];
-  const spec = asset === "eth"
-    ? {
-        title: "Send ETH on Hemi",
-        receiveTitle: "Receive ETH on Hemi",
-        unit: "ETH",
-        decimals: 18,
-        balance: b.ethWei,
-        gas: undefined,
-        hint: "The network fee comes out of this Hemi ETH balance.",
-        note: "Send Hemi-network ETH to this address. It also receives HEMI, VUSD, and hemiBTC.",
-        submit: w.sendEth,
-      }
-    : asset === "hemi"
-      ? {
-          title: `Send ${b.hemiTokenSymbol}`,
-          receiveTitle: `Receive ${b.hemiTokenSymbol}`,
-          unit: b.hemiTokenSymbol,
-          decimals: b.hemiTokenDecimals,
-          balance: b.hemiTokenWei,
-          gas: b.ethWei,
-          hint: "HEMI moves on Hemi. Gas is paid in Hemi ETH.",
-          note: "HEMI on Hemi. This address is not an Ethereum token contract.",
-          submit: w.sendHemiToken,
-        }
-      : asset === "vusd"
-        ? {
-            title: `Send ${b.vusdSymbol}`,
-            receiveTitle: `Receive ${b.vusdSymbol}`,
-            unit: b.vusdSymbol,
-            decimals: b.vusdDecimals,
-            balance: b.vusdWei,
-            gas: b.ethWei,
-            hint: "VUSD moves on Hemi. Gas is paid in Hemi ETH.",
-            note: "VUSD on Hemi.",
-            submit: w.sendVusd,
-          }
-        : {
-            title: `Send ${b.symbol}`,
-            receiveTitle: `Receive ${b.symbol}`,
-            unit: b.symbol,
-            decimals: b.decimals,
-            balance: b.hemiSats,
-            gas: b.ethWei,
-            hint: "hemiBTC moves on Hemi. Gas is paid in Hemi ETH. Do not paste a Bitcoin address here.",
-            note: "hemiBTC on Hemi. Do not send native Bitcoin to this address.",
-            submit: w.sendHemi,
-          };
+  const specs: Record<HemiAsset, {
+    title: string;
+    receiveTitle: string;
+    unit: string;
+    decimals: number;
+    balance: bigint | null;
+    gas?: bigint | null;
+    hint: string;
+    note: string;
+    submit: (to: string, amount: bigint) => Promise<string>;
+  }> = {
+    eth: {
+      title: "Send ETH on Hemi",
+      receiveTitle: "Receive ETH on Hemi",
+      unit: "ETH",
+      decimals: 18,
+      balance: b.ethWei,
+      hint: "The network fee comes out of this Hemi ETH balance.",
+      note: "Send Hemi-network ETH to this address. It also receives HEMI, VUSD, Vetro, WBTC, USDT, and hemiBTC.",
+      submit: w.sendEth,
+    },
+    hemi: {
+      title: `Send ${b.hemiTokenSymbol}`,
+      receiveTitle: `Receive ${b.hemiTokenSymbol}`,
+      unit: b.hemiTokenSymbol,
+      decimals: b.hemiTokenDecimals,
+      balance: b.hemiTokenWei,
+      gas: b.ethWei,
+      hint: "HEMI moves on Hemi. Gas is paid in Hemi ETH.",
+      note: "HEMI on Hemi. This address is not an Ethereum token contract.",
+      submit: w.sendHemiToken,
+    },
+    vusd: {
+      title: `Send ${b.vusdSymbol}`,
+      receiveTitle: `Receive ${b.vusdSymbol}`,
+      unit: b.vusdSymbol,
+      decimals: b.vusdDecimals,
+      balance: b.vusdWei,
+      gas: b.ethWei,
+      hint: "VUSD moves on Hemi. Gas is paid in Hemi ETH.",
+      note: "Official VUSD on Hemi. This is not Vetro USD.",
+      submit: w.sendVusd,
+    },
+    vetro: {
+      title: "Send Vetro",
+      receiveTitle: "Receive Vetro",
+      unit: "Vetro",
+      decimals: 18,
+      balance: b.vetroWei,
+      gas: b.ethWei,
+      hint: "Vetro USD moves on Hemi. Gas is paid in Hemi ETH. This is not VUSD.",
+      note: "Vetro USD on Hemi. The contract symbol is VUSD, and it is a different token from the VUSD row.",
+      submit: w.sendVetro,
+    },
+    usdt: {
+      title: "Send USDT",
+      receiveTitle: "Receive USDT",
+      unit: "USDT",
+      decimals: 6,
+      balance: b.usdtRaw,
+      gas: b.ethWei,
+      hint: "USDT moves on Hemi. Gas is paid in Hemi ETH.",
+      note: "USDT on Hemi. 6 decimals.",
+      submit: w.sendUsdt,
+    },
+    wbtc: {
+      title: "Send WBTC",
+      receiveTitle: "Receive WBTC",
+      unit: "WBTC",
+      decimals: 8,
+      balance: b.wbtcSats,
+      gas: b.ethWei,
+      hint: "WBTC moves on Hemi. Gas is paid in Hemi ETH. This is not hemiBTC or native Bitcoin.",
+      note: "Wrapped BTC on Hemi. Send WBTC to this address. This is not hemiBTC or native Bitcoin.",
+      submit: w.sendWbtc,
+    },
+    hemibtc: {
+      title: `Send ${b.symbol}`,
+      receiveTitle: `Receive ${b.symbol}`,
+      unit: b.symbol,
+      decimals: b.decimals,
+      balance: b.hemiSats,
+      gas: b.ethWei,
+      hint: "hemiBTC moves on Hemi. Gas is paid in Hemi ETH. Do not paste a Bitcoin address here.",
+      note: "hemiBTC on Hemi. Do not send native Bitcoin to this address.",
+      submit: w.sendHemi,
+    },
+  };
+  const spec = specs[asset];
 
   return (
     <Send

@@ -51,7 +51,8 @@ a, a:hover, a:focus { color: var(--orange-2); text-decoration: none; }
 .screen {
   flex: 1;
   overflow: auto;
-  padding: 3rem 16px 20px;
+  /* Same top edge as Orami, plus 2rem so the bubble above him clears the phone header. */
+  padding: calc(3rem + 2rem) 16px 20px;
 }
 .screen.bare { padding-bottom: 28px; }
 
@@ -128,7 +129,7 @@ a, a:hover, a:focus { color: var(--orange-2); text-decoration: none; }
 .meta { color: var(--faint); font-size: 11px; margin-top: 6px; }
 
 .actions, .split, .nav, .choice { display: flex; gap: 8px; }
-.actions { margin-top: 14px; }
+.actions { margin-top: 14px; flex-wrap: wrap; }
 .actions a { font-size: 13px; font-weight: 650; }
 .split { margin-bottom: 12px; }
 .choice { margin: 12px 0; flex-wrap: wrap; }
@@ -187,7 +188,6 @@ button.asset:hover { border-color: var(--orange-line); }
 .coin {
   width: 36px;
   height: 36px;
-  border-radius: 999px;
   display: block;
 }
 .asset b { display: block; font-size: 14px; }
@@ -329,6 +329,77 @@ a.out {
 .swap-pair { display: flex; justify-content: space-between; gap: 12px; margin: 4px 0 14px; color: var(--muted); font-size: 13px; }
 .swap-pair b { font-family: var(--mono); font-weight: 600; color: var(--text); text-align: right; }
 .swap-stack { display: flex; flex-direction: column; }
+.pool-stack { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.pool-pill { flex: none; cursor: default; }
+.range-chart { position: relative; margin: 4px 0 8px; touch-action: none; }
+.range-plot {
+  height: 268px;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #101012;
+}
+/* The chart sizes its table in the content box. The page-wide border-box resets that to nothing. */
+.range-plot .tv-lightweight-charts,
+.range-plot .tv-lightweight-charts * {
+  box-sizing: content-box;
+}
+.range-shade {
+  position: absolute;
+  left: 0;
+  background: rgba(255, 70, 0, 0.12);
+  pointer-events: none;
+  z-index: 1;
+}
+.range-now {
+  position: absolute;
+  left: 8px;
+  height: 0;
+  border-top: 1px dashed var(--orange-2);
+  pointer-events: none;
+  z-index: 1;
+}
+.range-handle {
+  position: absolute;
+  z-index: 2;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--orange);
+  border: 2px solid #18181b;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.range-scale {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.range-scale span:nth-child(2) { color: var(--orange-2); text-align: center; }
+.range-scale span:last-child { text-align: right; }
+.range-scale.range-percents { margin-bottom: 2px; font-size: 13px; font-weight: 650; color: var(--text); }
+.range-apr { margin-top: 4px; }
+.range-prices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.range-prices label { display: flex; flex-direction: column; gap: 4px; }
+.range-prices span { color: var(--faint); font-size: 11px; }
+.range-prices input {
+  width: 100%;
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  outline: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.range-prices input:focus { border-color: var(--orange); }
 .swap-panel {
   background: #101012;
   border: 1px solid var(--line-soft);
@@ -380,7 +451,7 @@ a.out {
   font-weight: 750;
   color: var(--text);
 }
-.swap-pill img, .swap-menu img { width: 22px; height: 22px; border-radius: 999px; display: block; }
+.swap-pill img, .swap-menu img { width: 22px; height: 22px; display: block; }
 .swap-pill i {
   width: 0;
   height: 0;
@@ -394,6 +465,8 @@ a.out {
   top: calc(100% + 6px);
   z-index: 3;
   min-width: 148px;
+  max-height: 240px;
+  overflow: auto;
   background: #1c1c20;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -453,6 +526,7 @@ a.out {
 .swap-sheet .rowline { margin: 10px 2px; }
 .swap-sheet .check { margin-top: 12px; }
 .stake-sheet .field { margin-top: 12px; }
+.stake-sheet .btn.wide { margin: 8px 0 4px; }
 .stake-sheet .fine { display: block; margin: 8px 0 0; line-height: 1.45; }
 .stake-pos { padding: 12px 14px; }
 .stake-pos .actions { margin-top: 8px; }
@@ -608,6 +682,7 @@ a.chain .amt span { display: block; color: var(--faint); font-size: 11px; font-w
 .coin-fallback {
   display: grid;
   place-items: center;
+  border-radius: 999px;
   background: #2a2a2e;
   color: var(--muted);
   font-size: 12px;
@@ -615,28 +690,54 @@ a.chain .amt span { display: block; color: var(--faint); font-size: 11px; font-w
 }
 .empty { color: var(--faint); font-size: 13px; padding: 12px 0; }
 
+.done-flash {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  background: rgba(9, 9, 11, 0.9);
+  border: 1px solid var(--orange-line);
+  border-radius: 18px;
+  padding: 16px 22px;
+}
+.done-flash .coin { width: 56px; height: 56px; }
+.done-flash b { font-size: 15px; }
+
 .buddy {
   position: absolute;
-  z-index: 6;
-  top: 3rem;
+  /* Above the header and the done flash, so the blast is not covered. */
+  z-index: 8;
+  top: calc(3rem + 2rem);
   right: 20px;
+  width: 220px;
   display: flex;
-  flex-direction: row;
-  align-items: flex-start;
+  justify-content: flex-end;
+  align-items: flex-end;
+  overflow: visible;
   pointer-events: none;
 }
 .buddy .say {
-  margin: 8px 6px 0 0;
-  max-width: 168px;
-  padding: 6px 8px;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  margin: 0;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 8px;
   background: #fff4ea;
   color: #1c120c;
   border: 2px solid var(--orange);
   border-radius: 12px 12px 4px 12px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 1.35;
-  box-shadow: 2px 2px 0 var(--orange);
+  line-height: 1.25;
+  box-shadow: 2px -2px 0 var(--orange);
 }
 .buddy .sprite {
   pointer-events: auto;
@@ -644,12 +745,14 @@ a.chain .amt span { display: block; color: var(--faint); font-size: 11px; font-w
   border: 0;
   padding: 0;
   line-height: 0;
+  overflow: visible;
 }
 .buddy img {
   height: 72px;
   width: auto;
   image-rendering: pixelated;
   transform: scaleX(-1);
+  overflow: visible;
 }
 @media (prefers-reduced-motion: reduce) {
   .buddy img { image-rendering: auto; }

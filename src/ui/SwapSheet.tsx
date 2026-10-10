@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import hemiEthIcon from "../assets/hemieth.svg";
 import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
+import usdtIcon from "../assets/usdt.svg";
+import vetroIcon from "../assets/vetro.svg";
 import vusdIcon from "../assets/vusd.svg";
+import wbtcIcon from "../assets/wbtc.svg";
 import { formatUnits, parseUnits } from "../lib/format";
 import { hemiProvider } from "../lib/hemi";
 import { messageOf } from "../lib/errors";
@@ -21,7 +24,10 @@ const ASSETS: { id: SwapAssetId; label: string; decimals: number; icon: string }
   { id: "eth", label: "ETH", decimals: 18, icon: hemiEthIcon },
   { id: "hemi", label: "HEMI", decimals: 18, icon: hemiIcon },
   { id: "vusd", label: "VUSD", decimals: 18, icon: vusdIcon },
+  { id: "vetro", label: "Vetro", decimals: 18, icon: vetroIcon },
+  { id: "usdt", label: "USDT", decimals: 6, icon: usdtIcon },
   { id: "hemibtc", label: "hemiBTC", decimals: 8, icon: hemiBtcIcon },
+  { id: "wbtc", label: "WBTC", decimals: 8, icon: wbtcIcon },
 ];
 
 export function SwapSheet({ onClose }: { onClose: () => void }) {
@@ -210,6 +216,10 @@ export function SwapSheet({ onClose }: { onClose: () => void }) {
           <b title={spot == null ? undefined : `1 ${buySpec.label} in ${sellSpec.label}`}>{money(spot, sellSpec)}</b>
         </div>
 
+        {(sell === "vetro" || buy === "vetro") && (
+          <p className="fine">Vetro is Vetro USD on Hemi. It is a different token from VUSD.</p>
+        )}
+
         <div className="swap-stack">
           <div className="swap-panel">
             <div className="swap-panel-top">
@@ -381,5 +391,8 @@ function balanceOf(id: SwapAssetId, balances: ReturnType<typeof useWallet>["bala
   if (id === "eth") return balances.ethWei;
   if (id === "hemi") return balances.hemiTokenWei;
   if (id === "vusd") return balances.vusdWei;
+  if (id === "vetro") return balances.vetroWei;
+  if (id === "usdt") return balances.usdtRaw;
+  if (id === "wbtc") return balances.wbtcSats;
   return balances.hemiSats;
 }

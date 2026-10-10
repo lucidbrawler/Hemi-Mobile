@@ -1,5 +1,5 @@
 import { Contract, JsonRpcProvider, Wallet, getAddress, isAddress } from "ethers";
-import { HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MEMPOOL, VAULT_FACTORY, VAULT_INDEX, VUSD } from "../chain";
+import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MERKL_DISTRIBUTOR, MEMPOOL, SUSHI_POSITION_MANAGER, USDT, VAULT_FACTORY, VAULT_INDEX, VETRO_USD, VUSD, WBTC } from "../chain";
 
 const erc20Abi = [
   "function name() view returns (string)",
@@ -31,6 +31,7 @@ const stateAbi = [
   "function minDepositFeeSats() view returns (uint256)",
   "function withdrawalFeeBps() view returns (uint256)",
   "function minWithdrawalFeeSats() view returns (uint256)",
+  "function isDepositAcknowledged(bytes32) view returns (bool)",
 ];
 
 export function hemiProvider(): JsonRpcProvider {
@@ -184,6 +185,22 @@ export async function withdrawToBitcoin(privateKey: string, btcAddress: string, 
   return receipt?.hash ?? tx.hash;
 }
 
+/** Bitcoin txid as the vault stores it: the display id, with a 0x prefix, not byte-reversed. */
+export function depositTxId(txid: string): string {
+  const bare = txid.trim().replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]{64}$/.test(bare)) throw new Error("This deposit has no Bitcoin transaction id.");
+  return `0x${bare.toLowerCase()}`;
+}
+
+/**
+ * True after the vault operator (or a manual confirmDeposit) has minted this deposit.
+ * The flag lives on the vault state child, not the factory.
+ */
+export async function readDepositAcknowledged(stateAddress: string, txid: string): Promise<boolean> {
+  const state = new Contract(stateAddress, stateAbi, hemiProvider());
+  return state.isDepositAcknowledged(depositTxId(txid)) as Promise<boolean>;
+}
+
 export async function confirmHemiDeposit(
   privateKey: string,
   txid: string,
@@ -191,8 +208,7 @@ export async function confirmHemiDeposit(
 ): Promise<string> {
   const wallet = new Wallet(privateKey, hemiProvider());
   const factory = new Contract(VAULT_FACTORY, factoryAbi, wallet);
-  const id = txid.startsWith("0x") ? txid : `0x${txid}`;
-  const tx = await factory.confirmDeposit(VAULT_INDEX, id, BigInt(outputIndex), "0x");
+  const tx = await factory.confirmDeposit(VAULT_INDEX, depositTxId(txid), BigInt(outputIndex), "0x");
   const receipt = await tx.wait();
   return receipt?.hash ?? tx.hash;
 }
@@ -266,6 +282,9 @@ const KNOWN_TOKENS: Record<string, { symbol: string; decimals: number }> = {
   [HEMIBTC.toLowerCase()]: { symbol: "hemiBTC", decimals: 8 },
   [HEMI_TOKEN.toLowerCase()]: { symbol: "HEMI", decimals: 18 },
   [VUSD.toLowerCase()]: { symbol: "VUSD", decimals: 18 },
+  [VETRO_USD.toLowerCase()]: { symbol: "Vetro", decimals: 18 },
+  [WBTC.toLowerCase()]: { symbol: "WBTC", decimals: 8 },
+  [USDT.toLowerCase()]: { symbol: "USDT", decimals: 6 },
 };
 
 type Party = { hash?: string } | null;
@@ -372,10 +391,21 @@ export function buildHemiRows(input: {
   const grouped = new Map<string, TxAcc>();
   const failed = new Set<string>();
   const tops = new Map<string, { from: string; to: string; value: bigint }>();
+  const aim = new Map<string, string>();
+  const positionManagers = new Set([
+    SUSHI_POSITION_MANAGER.toLowerCase(),
+    BROWNFI_POSITION_MANAGER.toLowerCase(),
+  ]);
+  const rewardPayers = new Set([
+    ...positionManagers,
+    MERKL_DISTRIBUTOR.toLowerCase(),
+  ]);
 
   for (const tx of input.transactions) {
     const hash = tx.hash?.toLowerCase() ?? "";
     if (!/^0x[0-9a-f]{64}$/.test(hash)) continue;
+    const aimed = party(tx.to);
+    if (aimed) aim.set(hash, aimed);
     if (tx.status === "error") {
       failed.add(hash);
       continue;
@@ -434,17 +464,24 @@ export function buildHemiRows(input: {
     const spent = legs.filter((leg) => leg.delta < 0n);
     const gained = legs.filter((leg) => leg.delta > 0n);
     const swap = spent.length > 0 && gained.length > 0;
+    const aimed = aim.get(row.hash) ?? "";
+    const added = !swap && spent.length > 0 && gained.length === 0 && positionManagers.has(aimed);
+    const claimed = !swap && gained.length > 0 && spent.length === 0 && rewardPayers.has(aimed);
     const one = legs.length === 1 ? legs[0] : null;
     const inbound = one != null && one.delta > 0n;
     rows.push({
       id: row.hash,
       when: row.when,
-      title: swap ? "Swap" : one ? `${one.symbol} ${inbound ? "received" : "sent"}` : spent.length ? "Sent" : "Received",
-      detail: swap
-        ? `${spent[0].symbol} → ${gained[0].symbol}`
-        : one
-          ? `${inbound ? "From" : "To"} ${shortParty(row.other)}`
-          : legs.map((leg) => leg.symbol).join(", "),
+      title: claimed ? "Claim rewards" : added ? "Add liquidity" : swap ? "Swap" : one ? `${one.symbol} ${inbound ? "received" : "sent"}` : spent.length ? "Sent" : "Received",
+      detail: claimed
+        ? gained.map((leg) => leg.symbol).join(" + ")
+        : added
+        ? spent.map((leg) => leg.symbol).join(" + ")
+        : swap
+          ? `${spent[0].symbol} → ${gained[0].symbol}`
+          : one
+            ? `${inbound ? "From" : "To"} ${shortParty(row.other)}`
+            : legs.map((leg) => leg.symbol).join(", "),
       href: hemiTxUrl(row.hash),
       legs: legs.slice(0, 3).map((leg) => ({
         amount: leg.delta.toString(),

@@ -18,7 +18,6 @@ const BLAST = [fire0, fire1, fire2, fire2, fire2, fire2];
 const FIRE = [...BLAST, ...BLAST, ...BLAST, ...BLAST, fire3, fire3];
 const FIRE_FRAME_MS = 280;
 const FIRE_HOLD_MS = 900;
-const SEND_MS = (FIRE.length - 1) * FIRE_FRAME_MS + FIRE_HOLD_MS;
 const REDUCE_MS = 2500;
 const TIPS = [
   "Sends stay off until you check mainnet.",
@@ -55,31 +54,36 @@ export function Buddy() {
       for (const id of pending) window.clearTimeout(id);
       pending.length = 0;
     };
-    const onSend = () => {
+    const onSend = (event: Event) => {
+      const detail = (event as CustomEvent<{ kind?: string; line?: string }>).detail;
+      const done = detail?.kind === "done";
+      const text = detail?.line || (done ? "Done." : "Sending.");
+      const frames = done ? BLAST : FIRE;
+      const hold = done ? 700 : FIRE_HOLD_MS;
+      const lineMs = reduce ? (done ? 1500 : REDUCE_MS) : (frames.length - 1) * FIRE_FRAME_MS + hold;
       clearFire();
-      setLine("Sending.");
+      setLine(text);
       window.clearTimeout(tipTimer.current);
-      const lineMs = reduce ? REDUCE_MS : SEND_MS;
       tipTimer.current = window.setTimeout(() => setLine(null), lineMs);
       if (reduce) {
         setFrame(fire2);
-        later(() => setFrame(idle0), REDUCE_MS);
+        later(() => setFrame(idle0), lineMs);
         return;
       }
       mode = "fire";
       let n = 0;
       const play = () => {
         if (cancelled) return;
-        setFrame(FIRE[n]);
+        setFrame(frames[n]);
         n += 1;
-        if (n < FIRE.length) {
+        if (n < frames.length) {
           later(play, FIRE_FRAME_MS);
         } else {
           later(() => {
             mode = "idle";
             step = 0;
             setFrame(idle0);
-          }, FIRE_HOLD_MS);
+          }, hold);
         }
       };
       play();

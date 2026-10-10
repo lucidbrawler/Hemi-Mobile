@@ -43,6 +43,36 @@ export const HEMI_TOKEN = "0x99e3dE3817F6081B2568208337ef83295b7f591D";
 export const VUSD = "0x7A06C4AeF988e7925575C50261297a946aD204A8";
 
 /**
+ * Vetro USD on Hemi. Its symbol is VUSD, and BrownFi lists it under that ticker.
+ * It is not the official VUSD above.
+ */
+export const VETRO_USD = "0xD3599AE62EE280709A22268a46d23164214e345B";
+
+/** Wrapped BTC on Hemi. 8 decimals. Bridged from Ethereum WBTC. */
+export const WBTC = "0x03C7054BCB39f7b2e5B2c7AcB37583e32D70Cfa3";
+
+/** USDT on Hemi mainnet, from the Hemi token list. 6 decimals. */
+export const USDT = "0xbB0D083fb1be0A9f6157ec484b6C79E0A4e31C2e";
+
+/**
+ * SushiSwap V3 position NFT on Hemi.
+ * factory() is 0xcdbcd51a5e8728e0af4895ce5771b7d17ff71959 and WETH9 is canonical WETH.
+ */
+export const SUSHI_POSITION_MANAGER = "0xe43ca1Dee3F0fc1e2df73A0745674545F11A59F5";
+
+/**
+ * BrownFi CLAMM position NFT (Algebra Positions NFT-V2) on Hemi.
+ * factory() is 0x10253594a832f967994b44f33411940533302acb.
+ */
+export const BROWNFI_POSITION_MANAGER = "0xD637cbc214Bc3dD354aBb309f4fE717ffdD0B28C";
+
+/**
+ * Merkl distributor on Hemi. The same proxy is used on most chains.
+ * claim(address[],address[],uint256[],bytes32[][]) pays incentive tokens.
+ */
+export const MERKL_DISTRIBUTOR = "0x3Ef3D8bA38EBe18DB133cEc108f4D14CE00Dd9Ae";
+
+/**
  * Hemi Labs veHEMI proxy. Locks HEMI into an NFT position.
  * deployments/hemi/VeHemi.json in github.com/hemilabs/veHEMI.
  */

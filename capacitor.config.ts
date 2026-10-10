@@ -7,6 +7,10 @@ const config: CapacitorConfig = {
   android: {
     allowMixedContent: false,
   },
+  plugins: {
+    // The Merkl API omits CORS headers. Native fetch reads it from the APK.
+    CapacitorHttp: { enabled: true },
+  },
   server: {
     androidScheme: "https",
   },

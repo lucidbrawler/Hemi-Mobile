@@ -28,12 +28,16 @@ import {
   withdrawEth as withdrawEthTx,
   type WithdrawalFields,
 } from "./lib/ethBridge";
-import { HEMI_TOKEN, VUSD } from "./chain";
+import { HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "./chain";
+import { claimPositionFees } from "./lib/lpRewards";
+import { executePoolDeposit, type PoolDeposit, type PoolVenue } from "./lib/pool";
 import { executeSwap, type SwapOrder } from "./lib/swap";
 import { claimStake, lockHemi, unlockStake } from "./lib/stake";
+import { celebrate, pokeBuddy } from "./lib/fx";
 import {
   confirmHemiDeposit,
   readBtcConfirmations,
+  readDepositAcknowledged,
   quoteVaultFee,
   readErc20,
   readHemiBalances,
@@ -83,6 +87,9 @@ type Balances = {
   vusdWei: bigint | null;
   vusdSymbol: string;
   vusdDecimals: number;
+  vetroWei: bigint | null;
+  wbtcSats: bigint | null;
+  usdtRaw: bigint | null;
   usd: number | null;
   symbol: string;
   decimals: number;
@@ -127,7 +134,12 @@ type WalletApi = {
   sendHemi: (to: string, amount: bigint) => Promise<string>;
   sendHemiToken: (to: string, amount: bigint) => Promise<string>;
   sendVusd: (to: string, amount: bigint) => Promise<string>;
+  sendVetro: (to: string, amount: bigint) => Promise<string>;
+  sendWbtc: (to: string, amount: bigint) => Promise<string>;
+  sendUsdt: (to: string, amount: bigint) => Promise<string>;
   swap: (order: SwapOrder, onPhase?: (phase: "approve" | "swap") => void) => Promise<string>;
+  addLiquidity: (order: PoolDeposit, onPhase?: (phase: "approve" | "deposit") => void) => Promise<string>;
+  claimLpFees: (venue: PoolVenue, tokenId: bigint) => Promise<string>;
   stakeLock: (amount: bigint, durationSec: bigint, onPhase?: (phase: "approve" | "lock") => void) => Promise<string>;
   stakeClaim: (tokenId: bigint) => Promise<string>;
   stakeUnlock: (tokenId: bigint, onPhase?: (phase: "record" | "unlock") => void) => Promise<string>;
@@ -156,14 +168,13 @@ const emptyBalances: Balances = {
   vusdWei: null,
   vusdSymbol: "VUSD",
   vusdDecimals: 18,
+  vetroWei: null,
+  wbtcSats: null,
+  usdtRaw: null,
   usd: null,
   symbol: "hemiBTC",
   decimals: 8,
 };
-
-function pokeBuddy() {
-  window.dispatchEvent(new CustomEvent("hemi-buddy"));
-}
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -220,7 +231,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setRefreshing(true);
     setError(null);
     try {
-      const [btcSats, hemi, usd, nextVault, l1EthWei, hemiToken, vusd] = await Promise.all([
+      const [btcSats, hemi, usd, nextVault, l1EthWei, hemiToken, vusd, vetro, wbtc, usdt] = await Promise.all([
         fetchBtcBalance(wallet.btcAddress),
         readHemiBalances(wallet.hemiAddress),
         fetchBtcPrice().catch(() => null),
@@ -228,6 +239,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         readL1Eth(wallet.hemiAddress).catch(() => null),
         readErc20(wallet.hemiAddress, HEMI_TOKEN, "HEMI", 18).catch(() => null),
         readErc20(wallet.hemiAddress, VUSD, "VUSD", 18).catch(() => null),
+        readErc20(wallet.hemiAddress, VETRO_USD, "Vetro", 18).catch(() => null),
+        readErc20(wallet.hemiAddress, WBTC, "WBTC", 8).catch(() => null),
+        readErc20(wallet.hemiAddress, USDT, "USDT", 6).catch(() => null),
       ]);
       setBalances({
         btcSats,
@@ -240,6 +254,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         vusdWei: vusd?.raw ?? null,
         vusdSymbol: vusd?.symbol ?? "VUSD",
         vusdDecimals: vusd?.decimals ?? 18,
+        vetroWei: vetro?.raw ?? null,
+        wbtcSats: wbtc?.raw ?? null,
+        usdtRaw: usdt?.raw ?? null,
         usd,
         symbol: hemi.symbol,
         decimals: hemi.decimals,
@@ -393,6 +410,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         });
         const txid = await broadcastTx(built.hex);
         setNotice(`Bitcoin sent. ${txid.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return txid;
       },
@@ -401,6 +419,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await sendEthTx(current.hemiPrivateKey, to, amount);
         setNotice(`ETH sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return hash;
       },
@@ -409,6 +428,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await sendEthereumTx(current.hemiPrivateKey, to, amount);
         setNotice(`ETH sent on Ethereum. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return hash;
       },
@@ -417,6 +437,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await sendHemiBtc(current.hemiPrivateKey, to, amount);
         setNotice(`hemiBTC sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return hash;
       },
@@ -425,6 +446,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await sendErc20(current.hemiPrivateKey, HEMI_TOKEN, to, amount);
         setNotice(`HEMI sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return hash;
       },
@@ -433,6 +455,34 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await sendErc20(current.hemiPrivateKey, VUSD, to, amount);
         setNotice(`VUSD sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
+        await refresh();
+        return hash;
+      },
+      async sendVetro(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendErc20(current.hemiPrivateKey, VETRO_USD, to, amount);
+        setNotice(`Vetro sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
+        await refresh();
+        return hash;
+      },
+      async sendWbtc(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendErc20(current.hemiPrivateKey, WBTC, to, amount);
+        setNotice(`WBTC sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
+        await refresh();
+        return hash;
+      },
+      async sendUsdt(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendErc20(current.hemiPrivateKey, USDT, to, amount);
+        setNotice(`USDT sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
         await refresh();
         return hash;
       },
@@ -441,6 +491,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const current = requireWallet();
         const hash = await executeSwap(current.hemiPrivateKey, current.hemiAddress, order, onPhase);
         setNotice(`Swapped. ${hash.slice(0, 10)}…`);
+        celebrate("Swapped.");
+        await refresh();
+        return hash;
+      },
+      async addLiquidity(order, onPhase) {
+        pokeBuddy("Depositing.");
+        const current = requireWallet();
+        const hash = await executePoolDeposit(current.hemiPrivateKey, current.hemiAddress, order, onPhase);
+        setNotice(`Liquidity deposited. ${hash.slice(0, 10)}…`);
+        celebrate("Deposited.");
+        await refresh();
+        return hash;
+      },
+      async claimLpFees(venue, tokenId) {
+        const current = requireWallet();
+        const hash = await claimPositionFees(current.hemiPrivateKey, venue, tokenId);
+        setNotice(`Rewards claimed. ${hash.slice(0, 10)}…`);
         await refresh();
         return hash;
       },
@@ -453,7 +520,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         return hash;
       },
       async stakeClaim(tokenId) {
-        pokeBuddy();
         const current = requireWallet();
         const hash = await claimStake(current.hemiPrivateKey, tokenId);
         setNotice(`Rewards claimed. ${hash.slice(0, 10)}…`);
@@ -539,13 +605,31 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       },
       async mintDeposit(record) {
         const current = requireWallet();
+        const live = vault ?? (await readVault());
+        setVault(live);
+        const already = await readDepositAcknowledged(live.stateAddress, record.txHash).catch(() => false);
+        if (already) {
+          setTunnels(markTunnel(record.id, "minted"));
+          setNotice("The vault already minted hemiBTC for this deposit.");
+          await refresh();
+          return;
+        }
         if (record.outputIndex == null) throw new Error("This deposit has no output index.");
         const confs = await readBtcConfirmations(record.txHash);
-        const need = vault?.confirmations ?? 4;
+        const need = live.confirmations;
         if (confs < need) {
           throw new Error(`${confs} of ${need} Bitcoin confirmations so far.`);
         }
-        await confirmHemiDeposit(current.hemiPrivateKey, record.txHash, record.outputIndex);
+        try {
+          await confirmHemiDeposit(current.hemiPrivateKey, record.txHash, record.outputIndex);
+        } catch (err) {
+          const acked = await readDepositAcknowledged(live.stateAddress, record.txHash).catch(() => false);
+          if (!acked) throw err;
+          setTunnels(markTunnel(record.id, "minted"));
+          setNotice("The vault already minted hemiBTC for this deposit.");
+          await refresh();
+          return;
+        }
         setTunnels(markTunnel(record.id, "minted"));
         setNotice("Mint submitted. hemiBTC shows up after the Hemi transaction confirms.");
         await refresh();
