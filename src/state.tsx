@@ -18,95 +18,232 @@ import {
   assertBtcAddress,
 } from "./lib/btc";
 import {
+  depositEth as depositEthTx,
+  finalizeWithdrawal,
+  proveWithdrawal,
+  readL1Eth,
+  readWithdrawalStage,
+  sendEthereum as sendEthereumTx,
+  stageError,
+  withdrawEth as withdrawEthTx,
+  type WithdrawalFields,
+} from "./lib/ethBridge";
+import { HEMI_TOKEN, VUSD } from "./chain";
+import { executeSwap, type SwapOrder } from "./lib/swap";
+import { claimStake, lockHemi, unlockStake } from "./lib/stake";
+import {
   confirmHemiDeposit,
   readBtcConfirmations,
   quoteVaultFee,
+  readErc20,
   readHemiBalances,
   readVault,
   requireEvmAddress,
+  sendErc20,
+  sendEth as sendEthTx,
   sendHemiBtc,
   withdrawToBitcoin,
   type VaultQuote,
 } from "./lib/hemi";
+import { nativePasskeyAvailable, nativeShell } from "./lib/devicePasskey";
 import {
-  forgetVault,
-  hasVault,
-  loadMnemonic,
+  attachPassword2fa,
+  forgetWallet,
+  inspectWallet,
+  listWallets,
+  loadByPasskey,
+  loadByPassword,
+  markEthMove,
   markTunnel,
+  pushEthMove,
   pushTunnel,
+  readEthMoves,
   readTunnels,
-  saveMnemonic,
+  savePasswordOnly,
+  saveWithPasskey,
+  walletNameTaken,
+  type EthMove,
+  type SavedWallet,
+  type StoredWithdrawal,
   type TunnelRecord,
+  type VaultAuth,
 } from "./lib/storage";
-import { createMnemonic, deriveWallet, type DerivedWallet } from "./lib/wallet";
+import { passkeyBlockReason, passkeySupported } from "./lib/passkey";
+import { deriveWallet, type DerivedWallet } from "./lib/wallet";
 import { messageOf } from "./lib/errors";
 
 type Balances = {
   btcSats: bigint | null;
   hemiSats: bigint | null;
   ethWei: bigint | null;
+  l1EthWei: bigint | null;
+  hemiTokenWei: bigint | null;
+  hemiTokenSymbol: string;
+  hemiTokenDecimals: number;
+  vusdWei: bigint | null;
+  vusdSymbol: string;
+  vusdDecimals: number;
   usd: number | null;
+  symbol: string;
+  decimals: number;
 };
+
+const noAuth: VaultAuth = { saved: false, hasPassword: false, hasPasskey: false, require2fa: false };
+
+type SaveOptions = { twoFactor: boolean; password?: string };
+type PasskeyKind = "native" | "web" | "none";
 
 type WalletApi = {
   ready: boolean;
   saved: boolean;
+  auth: VaultAuth;
+  passkeyReady: boolean;
+  passkeyKind: PasskeyKind;
+  passkeyNote: string | null;
+  wallets: SavedWallet[];
+  walletName: string | null;
   wallet: DerivedWallet | null;
   balances: Balances;
   vault: VaultQuote | null;
   tunnels: TunnelRecord[];
+  ethMoves: EthMove[];
   refreshing: boolean;
   notice: string | null;
   error: string | null;
   clearFlash: () => void;
-  create: (password: string) => Promise<string>;
-  importPhrase: (phrase: string, password: string) => Promise<void>;
-  unlock: (password: string) => Promise<void>;
+  saveWallet: (name: string, mnemonic: string, options: SaveOptions) => Promise<void>;
+  unlockPasskey: (name: string) => Promise<void>;
+  unlockPassword: (name: string, password: string) => Promise<void>;
+  unlock2fa: (name: string, password: string) => Promise<void>;
+  enablePasskey: (options: SaveOptions) => Promise<void>;
+  enablePassword2fa: (password: string) => Promise<void>;
+  removeWallet: (name: string) => Promise<void>;
   lock: () => void;
-  wipe: () => void;
   refresh: () => Promise<void>;
   feeRate: () => Promise<number>;
   sendBitcoin: (to: string, amount: bigint) => Promise<string>;
+  sendEth: (to: string, amount: bigint) => Promise<string>;
+  sendEthereum: (to: string, amount: bigint) => Promise<string>;
   sendHemi: (to: string, amount: bigint) => Promise<string>;
+  sendHemiToken: (to: string, amount: bigint) => Promise<string>;
+  sendVusd: (to: string, amount: bigint) => Promise<string>;
+  swap: (order: SwapOrder, onPhase?: (phase: "approve" | "swap") => void) => Promise<string>;
+  stakeLock: (amount: bigint, durationSec: bigint, onPhase?: (phase: "approve" | "lock") => void) => Promise<string>;
+  stakeClaim: (tokenId: bigint) => Promise<string>;
+  stakeUnlock: (tokenId: bigint, onPhase?: (phase: "record" | "unlock") => void) => Promise<string>;
   deposit: (hemiAddress: string, amount: bigint) => Promise<string>;
   withdraw: (btcAddress: string, amount: bigint) => Promise<string>;
   mintDeposit: (record: TunnelRecord) => Promise<void>;
   vaultFee: (kind: "deposit" | "withdraw", amount: bigint) => Promise<bigint>;
+  depositEth: (to: string, amount: bigint) => Promise<string>;
+  withdrawEth: (to: string, amount: bigint) => Promise<string>;
+  proveEth: (id: string) => Promise<string>;
+  finalizeEth: (id: string) => Promise<string>;
+  markEth: (id: string, status: EthMove["status"]) => void;
+  markBtc: (id: string, status: TunnelRecord["status"]) => void;
 };
 
 const Ctx = createContext<WalletApi | null>(null);
 
-const emptyBalances: Balances = { btcSats: null, hemiSats: null, ethWei: null, usd: null };
+const emptyBalances: Balances = {
+  btcSats: null,
+  hemiSats: null,
+  ethWei: null,
+  l1EthWei: null,
+  hemiTokenWei: null,
+  hemiTokenSymbol: "HEMI",
+  hemiTokenDecimals: 18,
+  vusdWei: null,
+  vusdSymbol: "VUSD",
+  vusdDecimals: 18,
+  usd: null,
+  symbol: "hemiBTC",
+  decimals: 8,
+};
+
+function pokeBuddy() {
+  window.dispatchEvent(new CustomEvent("hemi-buddy"));
+}
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [auth, setAuth] = useState<VaultAuth>(noAuth);
+  const [passkeyReady, setPasskeyReady] = useState(false);
+  const [passkeyKind, setPasskeyKind] = useState<PasskeyKind>("none");
+  const [passkeyNote, setPasskeyNote] = useState<string | null>(null);
+  const [wallets, setWallets] = useState<SavedWallet[]>([]);
+  const [walletName, setWalletName] = useState<string | null>(null);
   const [wallet, setWallet] = useState<DerivedWallet | null>(null);
   const [balances, setBalances] = useState<Balances>(emptyBalances);
   const [vault, setVault] = useState<VaultQuote | null>(null);
   const [tunnels, setTunnels] = useState<TunnelRecord[]>([]);
+  const [ethMoves, setEthMoves] = useState<EthMove[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setSaved(hasVault());
-    setTunnels(readTunnels());
-    setReady(true);
+  const reloadWallets = useCallback(() => {
+    const rows = listWallets();
+    setWallets(rows);
+    setSaved(rows.length > 0);
+    return rows;
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const native = await nativePasskeyAvailable();
+      const kind: PasskeyKind = native ? "native" : passkeySupported() ? "web" : "none";
+      if (!live) return;
+      setPasskeyKind(kind);
+      setPasskeyReady(kind !== "none");
+      setPasskeyNote(
+        kind === "none"
+          ? nativeShell()
+            ? "This phone has no fingerprint, face, or screen lock the app can use. A password can save the wallet here."
+            : passkeyBlockReason()
+          : null,
+      );
+      reloadWallets();
+      setTunnels(readTunnels());
+      setEthMoves(readEthMoves());
+      setReady(true);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [reloadWallets]);
 
   const refresh = useCallback(async () => {
     if (!wallet) return;
     setRefreshing(true);
     setError(null);
     try {
-      const [btcSats, hemi, usd, nextVault] = await Promise.all([
+      const [btcSats, hemi, usd, nextVault, l1EthWei, hemiToken, vusd] = await Promise.all([
         fetchBtcBalance(wallet.btcAddress),
         readHemiBalances(wallet.hemiAddress),
         fetchBtcPrice().catch(() => null),
         readVault().catch(() => null),
+        readL1Eth(wallet.hemiAddress).catch(() => null),
+        readErc20(wallet.hemiAddress, HEMI_TOKEN, "HEMI", 18).catch(() => null),
+        readErc20(wallet.hemiAddress, VUSD, "VUSD", 18).catch(() => null),
       ]);
-      setBalances({ btcSats, hemiSats: hemi.hemiSats, ethWei: hemi.ethWei, usd });
+      setBalances({
+        btcSats,
+        hemiSats: hemi.hemiSats,
+        ethWei: hemi.ethWei,
+        l1EthWei,
+        hemiTokenWei: hemiToken?.raw ?? null,
+        hemiTokenSymbol: hemiToken?.symbol ?? "HEMI",
+        hemiTokenDecimals: hemiToken?.decimals ?? 18,
+        vusdWei: vusd?.raw ?? null,
+        vusdSymbol: vusd?.symbol ?? "VUSD",
+        vusdDecimals: vusd?.decimals ?? 18,
+        usd,
+        symbol: hemi.symbol,
+        decimals: hemi.decimals,
+      });
       if (nextVault) setVault(nextVault);
     } catch (err) {
       setError(messageOf(err));
@@ -122,12 +259,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [wallet, refresh]);
 
-  const open = useCallback(async (mnemonic: string) => {
+  const open = useCallback(async (name: string, mnemonic: string) => {
+    setWalletName(name);
     setWallet(deriveWallet(mnemonic));
-    setSaved(true);
+    setAuth(inspectWallet(name));
+    reloadWallets();
     setNotice(null);
     setError(null);
-  }, []);
+  }, [reloadWallets]);
 
   const api = useMemo<WalletApi>(() => {
     function requireWallet(): DerivedWallet {
@@ -138,10 +277,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return {
       ready,
       saved,
+      auth,
+      passkeyReady,
+      passkeyKind,
+      passkeyNote,
+      wallets,
+      walletName,
       wallet,
       balances,
       vault,
       tunnels,
+      ethMoves,
       refreshing,
       notice,
       error,
@@ -149,35 +295,90 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setNotice(null);
         setError(null);
       },
-      async create(password: string) {
-        const mnemonic = createMnemonic();
-        await saveMnemonic(password, mnemonic);
-        await open(mnemonic);
-        return mnemonic;
+      async saveWallet(name, mnemonic, options) {
+        if (walletNameTaken(name)) throw new Error("A wallet with that name is already on this device.");
+        const derived = deriveWallet(mnemonic);
+        const native = passkeyKind === "native";
+        if (passkeyReady) {
+          await saveWithPasskey(name, derived.mnemonic, derived.btcAddress, {
+            password: options.twoFactor ? options.password : undefined,
+            require2fa: options.twoFactor,
+            native,
+          });
+        } else {
+          if (!options.password) throw new Error("Set a password. Passkey is not available here.");
+          await savePasswordOnly(name, derived.mnemonic, options.password, derived.btcAddress);
+        }
+        await open(name.trim().replace(/\s+/g, " "), derived.mnemonic);
       },
-      async importPhrase(phrase: string, password: string) {
-        const derived = deriveWallet(phrase);
-        await saveMnemonic(password, derived.mnemonic);
-        await open(derived.mnemonic);
+      async unlockPasskey(name) {
+        const row = inspectWallet(name);
+        if (row.require2fa) throw new Error("Enter the password, then confirm the passkey.");
+        if (!row.hasPasskey) throw new Error("This wallet has no passkey.");
+        await open(name, await loadByPasskey(name));
       },
-      async unlock(password: string) {
-        const mnemonic = await loadMnemonic(password);
-        await open(mnemonic);
+      async unlockPassword(name, password) {
+        const row = inspectWallet(name);
+        if (row.require2fa) throw new Error("This wallet unlocks with the password and the passkey together.");
+        if (row.hasPasskey && !row.hasPassword) throw new Error("Unlock this wallet with the passkey.");
+        await open(name, await loadByPassword(name, password));
+      },
+      async unlock2fa(name, password) {
+        const row = inspectWallet(name);
+        if (!row.require2fa) throw new Error("2FA is not on for this wallet.");
+        const fromPassword = await loadByPassword(name, password);
+        const fromPasskey = await loadByPasskey(name);
+        if (fromPassword !== fromPasskey) {
+          throw new Error("Password and passkey unlocked different phrases. Import the phrase and save again.");
+        }
+        await open(name, fromPasskey);
+      },
+      async enablePasskey(options) {
+        const current = requireWallet();
+        if (!walletName) throw new Error("Unlock the wallet first.");
+        if (options.twoFactor && auth.hasPassword) {
+          if (!options.password) throw new Error("Enter the wallet password to keep it as 2FA.");
+          const got = await loadByPassword(walletName, options.password);
+          if (got !== current.mnemonic) throw new Error("Wrong password.");
+        }
+        await saveWithPasskey(walletName, current.mnemonic, current.btcAddress, {
+          password: options.twoFactor ? options.password : undefined,
+          require2fa: options.twoFactor,
+          native: passkeyKind === "native",
+        });
+        setAuth(inspectWallet(walletName));
+        reloadWallets();
+        setNotice(options.twoFactor ? "Next unlock: password, then passkey." : "Next unlock: passkey.");
+      },
+      async enablePassword2fa(password) {
+        const current = requireWallet();
+        if (!walletName) throw new Error("Unlock the wallet first.");
+        await attachPassword2fa(walletName, current.mnemonic, password);
+        setAuth(inspectWallet(walletName));
+        reloadWallets();
+        setNotice("2FA is on. Next unlock asks for the password, then the passkey.");
+      },
+      async removeWallet(name) {
+        await forgetWallet(name);
+        if (walletName && walletName.toLowerCase() === name.trim().toLowerCase()) {
+          setWallet(null);
+          setWalletName(null);
+          setAuth(noAuth);
+          setBalances(emptyBalances);
+        }
+        reloadWallets();
+        setNotice(null);
       },
       lock() {
         setWallet(null);
+        setWalletName(null);
+        setAuth(noAuth);
         setBalances(emptyBalances);
-      },
-      wipe() {
-        forgetVault();
-        setWallet(null);
-        setSaved(false);
-        setBalances(emptyBalances);
-        setNotice(null);
       },
       refresh,
       feeRate: fetchFeeRate,
       async sendBitcoin(to, amount) {
+        pokeBuddy();
         const current = requireWallet();
         const dest = assertBtcAddress(to);
         const utxos = await fetchUtxos(current.btcAddress);
@@ -195,10 +396,75 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         await refresh();
         return txid;
       },
+      async sendEth(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendEthTx(current.hemiPrivateKey, to, amount);
+        setNotice(`ETH sent. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async sendEthereum(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendEthereumTx(current.hemiPrivateKey, to, amount);
+        setNotice(`ETH sent on Ethereum. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
       async sendHemi(to, amount) {
+        pokeBuddy();
         const current = requireWallet();
         const hash = await sendHemiBtc(current.hemiPrivateKey, to, amount);
         setNotice(`hemiBTC sent. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async sendHemiToken(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendErc20(current.hemiPrivateKey, HEMI_TOKEN, to, amount);
+        setNotice(`HEMI sent. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async sendVusd(to, amount) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await sendErc20(current.hemiPrivateKey, VUSD, to, amount);
+        setNotice(`VUSD sent. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async swap(order, onPhase) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await executeSwap(current.hemiPrivateKey, current.hemiAddress, order, onPhase);
+        setNotice(`Swapped. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async stakeLock(amount, durationSec, onPhase) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await lockHemi(current.hemiPrivateKey, amount, durationSec, onPhase);
+        setNotice(`HEMI locked. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async stakeClaim(tokenId) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await claimStake(current.hemiPrivateKey, tokenId);
+        setNotice(`Rewards claimed. ${hash.slice(0, 10)}…`);
+        await refresh();
+        return hash;
+      },
+      async stakeUnlock(tokenId, onPhase) {
+        pokeBuddy();
+        const current = requireWallet();
+        const hash = await unlockStake(current.hemiPrivateKey, tokenId, onPhase);
+        setNotice(`HEMI unlocked. ${hash.slice(0, 10)}…`);
         await refresh();
         return hash;
       },
@@ -289,10 +555,104 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setVault(live);
         return quoteVaultFee(live.stateAddress, kind, amount);
       },
+      async depositEth(to, amount) {
+        const current = requireWallet();
+        const hash = await depositEthTx(current.hemiPrivateKey, to, amount);
+        setEthMoves(pushEthMove({
+          id: hash,
+          direction: "to-hemi",
+          createdAt: Date.now(),
+          amountWei: amount.toString(),
+          from: current.hemiAddress,
+          to: requireEvmAddress(to),
+          txHash: hash,
+          hemiWeiBefore: balances.ethWei == null ? undefined : balances.ethWei.toString(),
+          status: "submitted",
+        }));
+        setNotice("Deposit submitted on Ethereum. Hemi credits that address after the next derived blocks.");
+        await refresh();
+        return hash;
+      },
+      async withdrawEth(to, amount) {
+        const current = requireWallet();
+        const sent = await withdrawEthTx(current.hemiPrivateKey, to, amount);
+        setEthMoves(pushEthMove({
+          id: sent.hash,
+          direction: "to-ethereum",
+          createdAt: Date.now(),
+          amountWei: amount.toString(),
+          from: current.hemiAddress,
+          to: requireEvmAddress(to),
+          txHash: sent.hash,
+          l2Block: sent.l2Block,
+          withdrawal: storedWithdrawal(sent.withdrawal, sent.withdrawalHash),
+          status: "submitted",
+        }));
+        setNotice("Withdrawal submitted on Hemi. Prove it on Ethereum once an output includes this block.");
+        await refresh();
+        return sent.hash;
+      },
+      async proveEth(id) {
+        const current = requireWallet();
+        const move = readEthMoves().find((row) => row.id === id);
+        const fields = move ? withdrawalFields(move) : null;
+        if (!move || !fields || move.l2Block == null) throw new Error("This withdrawal has no exit message.");
+        const stage = await readWithdrawalStage(fields, move.l2Block);
+        if (stage.kind !== "ready-to-prove") throw new Error(stageError(stage));
+        const hash = await proveWithdrawal(current.hemiPrivateKey, fields, stage.output);
+        setEthMoves(markEthMove(id, "proven"));
+        setNotice("Proof submitted on Ethereum. Finalize after the waiting period.");
+        await refresh();
+        return hash;
+      },
+      async finalizeEth(id) {
+        const current = requireWallet();
+        const move = readEthMoves().find((row) => row.id === id);
+        const fields = move ? withdrawalFields(move) : null;
+        if (!move || !fields || move.l2Block == null) throw new Error("This withdrawal has no exit message.");
+        const stage = await readWithdrawalStage(fields, move.l2Block);
+        if (stage.kind !== "ready-to-finalize") throw new Error(stageError(stage));
+        const hash = await finalizeWithdrawal(current.hemiPrivateKey, fields);
+        setEthMoves(markEthMove(id, "finalized"));
+        setNotice("Finalized. The ETH is on the Ethereum address from the withdrawal.");
+        await refresh();
+        return hash;
+      },
+      markEth(id, status) {
+        setEthMoves(markEthMove(id, status));
+      },
+      markBtc(id, status) {
+        setTunnels(markTunnel(id, status));
+      },
     };
-  }, [ready, saved, wallet, balances, vault, tunnels, refreshing, notice, error, open, refresh]);
+  }, [ready, saved, auth, passkeyReady, passkeyKind, passkeyNote, wallets, walletName, wallet, balances, vault, tunnels, ethMoves, refreshing, notice, error, open, refresh, reloadWallets]);
 
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
+}
+
+function storedWithdrawal(tx: WithdrawalFields, hash: string): StoredWithdrawal {
+  return {
+    nonce: tx.nonce.toString(),
+    sender: tx.sender,
+    target: tx.target,
+    value: tx.value.toString(),
+    gasLimit: tx.gasLimit.toString(),
+    data: tx.data,
+    hash,
+  };
+}
+
+export function withdrawalFields(move: EthMove): WithdrawalFields | null {
+  const row = move.withdrawal;
+  if (!row) return null;
+  return {
+    nonce: BigInt(row.nonce),
+    sender: row.sender,
+    target: row.target,
+    value: BigInt(row.value),
+    gasLimit: BigInt(row.gasLimit),
+    data: row.data,
+  };
 }
 
 export function useWallet(): WalletApi {

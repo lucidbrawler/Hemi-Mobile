@@ -1,7 +1,10 @@
 import { hex } from "@scure/base";
+import { ZeroHash } from "ethers";
 import { assertMnemonic, deriveWallet } from "../src/lib/wallet.ts";
 import { buildSignedTx, memoScriptHex, tunnelMemo } from "../src/lib/btc.ts";
+import { hashOutputRootProof, hashWithdrawal, withdrawalStorageKey } from "../src/lib/ethBridge.ts";
 import { btcToSats, satsToBtc } from "../src/lib/format.ts";
+import { isPopPublication } from "../src/lib/pop.ts";
 
 const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 assertMnemonic(phrase);
@@ -44,6 +47,39 @@ const memoHex = memoScriptHex(wallet.hemiAddress);
 if (!built.hex.includes(memoHex)) throw new Error("signed deposit is missing the OP_RETURN memo");
 if (!/^[0-9a-f]{64}$/.test(built.txid)) throw new Error(`bad txid ${built.txid}`);
 if (built.outputIndex !== 0) throw new Error("vault payment should be vout 0");
+
+const popScript = "6a4c50" + "48454d49" + "11".repeat(40);
+if (!isPopPublication(popScript)) throw new Error("HEMI OP_RETURN should count as a PoP publication");
+if (isPopPublication(script)) throw new Error("tunnel memo must not count as a PoP publication");
+if (isPopPublication("0014" + "ab".repeat(20))) throw new Error("witness output is not a PoP publication");
+
+const outputRoot = hashOutputRootProof({
+  version: ZeroHash,
+  stateRoot: "0xaed9d5353882013dabedfe609c227aa46161dd0a26696d062d667ca0e02936e8",
+  messagePasserStorageRoot: "0x83f8c9186ae518ff8dbc6ad26642075972a16c0e70a31bfca01402d42e9746b7",
+  latestBlockhash: "0x4d95be6a78e9a210386c967d0b884cbbdbd265bc47d0ec8390cc93e3e6d96122",
+});
+if (outputRoot !== "0x364791d49846d7036a60fe2a7d0d23e6a71c482b993c8b3d72c0a24f3bdfff77") {
+  throw new Error(`output root ${outputRoot}`);
+}
+
+const liveWithdrawal = "0xd64438c82353de6ff70d60596e88cbedaf474e383361f5df44ff2fed9890ce41";
+const storageKey = withdrawalStorageKey(liveWithdrawal);
+if (storageKey !== "0x1ecc66a547f3442ed1f40b6ec6d18bb758d24d10ef9ce3948bac968f3327ae34") {
+  throw new Error(`withdrawal slot ${storageKey}`);
+}
+
+const synthetic = hashWithdrawal({
+  nonce: 1n,
+  sender: "0x4200000000000000000000000000000000000007",
+  target: "0xF005dFb08377faD44588Af68d0884D272A6fb050",
+  value: 5n,
+  gasLimit: 200_000n,
+  data: "0x",
+});
+if (synthetic !== "0xd962f497c020341649c558310c90fd4858ff96f37c1d0b43f709acde38dd96dd") {
+  throw new Error(`withdrawal hash ${synthetic}`);
+}
 
 console.log("selfcheck ok");
 console.log(wallet.btcAddress);

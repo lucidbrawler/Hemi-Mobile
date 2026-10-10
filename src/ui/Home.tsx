@@ -1,16 +1,33 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { formatUsd, satsToBtc, shortAddr, btcToSats } from "../lib/format";
+import btcIcon from "../assets/btc.svg";
+import ethIcon from "../assets/eth.svg";
+import hemiEthIcon from "../assets/hemieth.svg";
+import hemiIcon from "../assets/hemi.svg";
+import hemiBtcIcon from "../assets/hemibtc.svg";
+import vusdIcon from "../assets/vusd.svg";
+import { ETH_EXPLORER, HEMIBTC, HEMI_TOKEN, VUSD } from "../chain";
+import { formatUnits, formatUsd, parseUnits, satsToBtc, shortAddr } from "../lib/format";
 import { btcAddressUrl, hemiAddressUrl } from "../lib/hemi";
 import { messageOf } from "../lib/errors";
 import { useWallet } from "../state";
+import { StakeSheet } from "./StakeSheet";
+import { SwapSheet } from "./SwapSheet";
 
-type Sheet = null | "receive" | "send-btc" | "send-hemi" | "phrase";
+type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "phrase" | "passkey" | "2fa";
+type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc";
 
 export function Home() {
   const w = useWallet();
   const wallet = w.wallet!;
   const [sheet, setSheet] = useState<Sheet>(null);
+  const [tokenAsset, setTokenAsset] = useState<HemiAsset>("hemibtc");
+  const [tokenMode, setTokenMode] = useState<"send" | "receive">("send");
+  function openToken(asset: HemiAsset, mode: "send" | "receive") {
+    setTokenAsset(asset);
+    setTokenMode(mode);
+    setSheet("token");
+  }
   const btc = w.balances.btcSats;
   const hemi = w.balances.hemiSats;
   const total = btc != null && hemi != null ? btc + hemi : null;
@@ -30,85 +47,268 @@ export function Home() {
           <span className="unit">BTC</span>
         </div>
         <div className="sub">{usd == null ? "Price unavailable" : `≈ ${formatUsd(usd)}`}</div>
-        <div className="meta">Hemi mainnet · chain 43111 · Bitcoin mainnet</div>
+        <div className="meta">{w.walletName ? `${w.walletName} · ` : ""}Hemi mainnet · chain 43111 · Bitcoin and Ethereum</div>
       </section>
 
-      <button className="card asset" type="button" onClick={() => setSheet("send-btc")}>
-        <span className="dot btc">BTC</span>
-        <span>
-          <b>Bitcoin</b>
-          <small>Native · {shortAddr(wallet.btcAddress, 10, 6)}</small>
-        </span>
-        <span className="amt">
-          {btc == null ? "—" : satsToBtc(btc)}
-          <span>BTC</span>
-        </span>
-      </button>
+      <AssetRow
+        icon={btcIcon}
+        ticker="BTC"
+        detail={`Native · ${shortAddr(wallet.btcAddress, 10, 6)}`}
+        amount={btc == null ? "—" : satsToBtc(btc)}
+        unit="BTC"
+        onClick={() => setSheet("send-btc")}
+      />
+      <AssetRow
+        icon={ethIcon}
+        ticker="ETH"
+        detail={`Native · On Ethereum · ${shortAddr(wallet.hemiAddress, 10, 6)}`}
+        amount={w.balances.l1EthWei == null ? "—" : formatUnits(w.balances.l1EthWei, 18)}
+        unit="ETH"
+        onClick={() => setSheet("send-l1-eth")}
+      />
 
-      <button className="card asset" type="button" onClick={() => setSheet("send-hemi")}>
-        <span className="dot hbtc">hB</span>
-        <span>
-          <b>hemiBTC</b>
-          <small>Hemi · {shortAddr(wallet.hemiAddress, 8, 6)}</small>
-        </span>
-        <span className="amt">
-          {hemi == null ? "—" : satsToBtc(hemi)}
-          <span>hemiBTC</span>
-        </span>
-      </button>
+      <section className="card hemi-wallet">
+        <div className="kicker"><span>Hemi wallet</span></div>
+        <p className="hint">
+          Created with this phrase. Bitcoin you tunnel is minted here as {w.balances.symbol}. HEMI, VUSD, and ETH already on Hemi live on this address.
+        </p>
+        <p className="addr">{wallet.hemiAddress}</p>
+        <Holding
+          icon={hemiEthIcon}
+          ticker="ETH"
+          detail="On Hemi · gas"
+          amount={w.balances.ethWei == null ? "—" : formatUnits(w.balances.ethWei, 18)}
+          unit="ETH"
+          onClick={() => openToken("eth", "send")}
+        />
+        <Holding
+          icon={hemiIcon}
+          ticker={w.balances.hemiTokenSymbol}
+          detail={`ERC-20 · ${w.balances.hemiTokenDecimals} decimals · ${shortAddr(HEMI_TOKEN, 6, 4)}`}
+          amount={w.balances.hemiTokenWei == null ? "—" : formatUnits(w.balances.hemiTokenWei, w.balances.hemiTokenDecimals)}
+          unit={w.balances.hemiTokenSymbol}
+          onClick={() => openToken("hemi", "send")}
+        />
+        <Holding
+          icon={vusdIcon}
+          ticker={w.balances.vusdSymbol}
+          detail={`Stablecoin · ${w.balances.vusdDecimals} decimals · ${shortAddr(VUSD, 6, 4)}`}
+          amount={w.balances.vusdWei == null ? "—" : formatUnits(w.balances.vusdWei, w.balances.vusdDecimals)}
+          unit={w.balances.vusdSymbol}
+          onClick={() => openToken("vusd", "send")}
+        />
+        <Holding
+          icon={hemiBtcIcon}
+          ticker={w.balances.symbol}
+          detail={`ERC-20 · ${w.balances.decimals} decimals · ${shortAddr(HEMIBTC, 6, 4)}`}
+          amount={hemi == null ? "—" : formatUnits(hemi, w.balances.decimals)}
+          unit={w.balances.symbol}
+          onClick={() => openToken("hemibtc", "send")}
+        />
+        <div className="actions">
+          <button className="ghost" type="button" onClick={() => setSheet("stake")}>Stake HEMI</button>
+        </div>
+      </section>
 
-      <p className="fine">
-        Hemi gas {w.balances.ethWei == null ? "—" : `${formatEth(w.balances.ethWei)} ETH`}. Sends and tunnel withdrawals on Hemi need a little ETH.
-      </p>
+      <section className="card secure">
+        <div className="kicker"><span>Unlock</span></div>
+        <b>{w.auth.require2fa ? "Password + passkey" : w.auth.hasPasskey ? "Passkey" : "Password"}</b>
+        <p className="fine">
+          {w.auth.require2fa
+            ? "Every login asks for the password, then the passkey."
+            : w.auth.hasPasskey
+              ? "The passkey opens this wallet. Add a password if you want a second factor."
+              : "A password is saved. Enable a passkey to make that the unlock, and keep the password as 2FA if you want both."}
+        </p>
+        {w.auth.hasPasskey && !w.auth.require2fa && (
+          <button className="ghost" type="button" onClick={() => setSheet("2fa")}>Add password 2FA</button>
+        )}
+        {!w.auth.hasPasskey && w.passkeyReady && (
+          <button className="btn primary" type="button" onClick={() => setSheet("passkey")}>Enable passkey</button>
+        )}
+        <div className="actions">
+          <button className="ghost" type="button" onClick={() => setSheet("phrase")}>Phrase</button>
+          <button className="ghost" type="button" onClick={w.lock}>Lock</button>
+        </div>
+      </section>
 
-      <div className="actions">
-        <button className="btn primary" type="button" onClick={() => setSheet("receive")}>Receive</button>
-        <button className="ghost" type="button" onClick={() => setSheet("phrase")}>Phrase</button>
-        <button className="ghost" type="button" onClick={w.lock}>Lock</button>
+      <div className="dock-spacer" aria-hidden="true" />
+      <div className="dock">
+        <button className="ghost" type="button" onClick={() => setSheet("receive")}>Receive</button>
+        <button className="btn primary" type="button" onClick={() => setSheet("swap")}>Swap</button>
+        <button className="ghost" type="button" onClick={() => openToken("eth", "send")}>Send</button>
       </div>
 
-      {sheet === "receive" && <Receive onClose={() => setSheet(null)} />}
+      {sheet === "receive" && <Receive initial="btc" onClose={() => setSheet(null)} />}
+      {sheet === "receive-hemi" && <Receive initial="hemi" onClose={() => setSheet(null)} />}
       {sheet === "send-btc" && (
         <Send
           title="Send Bitcoin"
           unit="BTC"
+          decimals={8}
           balance={btc}
           onClose={() => setSheet(null)}
           onSubmit={(to, amount) => w.sendBitcoin(to, amount)}
           placeholder="bc1…"
+          initialMode="send"
+          receive={{
+            title: "Receive Bitcoin",
+            address: wallet.btcAddress,
+            explorer: btcAddressUrl(wallet.btcAddress),
+            note: "Native segwit Bitcoin. Do not send hemiBTC here.",
+          }}
         />
       )}
-      {sheet === "send-hemi" && (
+      {sheet === "send-l1-eth" && (
         <Send
-          title="Send hemiBTC"
-          unit="hemiBTC"
-          balance={hemi}
+          title="Send ETH on Ethereum"
+          unit="ETH"
+          decimals={18}
+          balance={w.balances.l1EthWei}
           onClose={() => setSheet(null)}
-          onSubmit={(to, amount) => w.sendHemi(to, amount)}
+          onSubmit={(to, amount) => w.sendEthereum(to, amount)}
           placeholder="0x…"
-          gas={w.balances.ethWei}
+          hint="The amount is what the address receives. The Ethereum network fee is extra and comes out of this balance."
+          initialMode="send"
+          receive={{
+            title: "Receive ETH on Ethereum",
+            address: wallet.hemiAddress,
+            explorer: `${ETH_EXPLORER}/address/${wallet.hemiAddress}`,
+            note: "Native ETH on Ethereum. This is the same address as the Hemi wallet, on Ethereum.",
+          }}
         />
       )}
+      {sheet === "token" && (
+        <TokenSheet initial={tokenAsset} start={tokenMode} onClose={() => setSheet(null)} />
+      )}
+      {sheet === "swap" && <SwapSheet onClose={() => setSheet(null)} />}
+      {sheet === "stake" && <StakeSheet onClose={() => setSheet(null)} />}
       {sheet === "phrase" && <Phrase onClose={() => setSheet(null)} />}
+      {sheet === "passkey" && <EnablePasskey onClose={() => setSheet(null)} />}
+      {sheet === "2fa" && <Enable2fa onClose={() => setSheet(null)} />}
     </div>
   );
 }
 
-function formatEth(wei: bigint): string {
-  const whole = wei / 10n ** 18n;
-  const frac = (wei % 10n ** 18n).toString().padStart(18, "0").slice(0, 5).replace(/0+$/, "");
-  return frac ? `${whole}.${frac}` : whole.toString();
+function RowBody({
+  icon,
+  ticker,
+  detail,
+  amount,
+  unit,
+}: {
+  icon: string;
+  ticker: string;
+  detail: string;
+  amount: string;
+  unit: string;
+}) {
+  return (
+    <>
+      <img className="coin" src={icon} alt="" />
+      <span>
+        <b>{ticker}</b>
+        <small>{detail}</small>
+      </span>
+      <span className="amt">
+        {amount}
+        <span>{unit}</span>
+      </span>
+    </>
+  );
 }
 
-function Receive({ onClose }: { onClose: () => void }) {
+function AssetRow({
+  onClick,
+  ...row
+}: {
+  icon: string;
+  ticker: string;
+  detail: string;
+  amount: string;
+  unit: string;
+  onClick?: () => void;
+}) {
+  if (onClick) {
+    return (
+      <button className="card asset" type="button" onClick={onClick}>
+        <RowBody {...row} />
+      </button>
+    );
+  }
+  return (
+    <div className="card asset">
+      <RowBody {...row} />
+    </div>
+  );
+}
+
+function Holding({
+  onClick,
+  ...row
+}: {
+  icon: string;
+  ticker: string;
+  detail: string;
+  amount: string;
+  unit: string;
+  onClick: () => void;
+}) {
+  return (
+    <button className="holding" type="button" onClick={onClick}>
+      <RowBody {...row} />
+    </button>
+  );
+}
+
+function Receive({ onClose, initial }: { onClose: () => void; initial: "btc" | "hemi" }) {
   const wallet = useWallet().wallet!;
-  const [which, setWhich] = useState<"btc" | "hemi">("btc");
+  const [which, setWhich] = useState<"btc" | "eth" | "hemi">(initial === "btc" ? "btc" : "hemi");
   const address = which === "btc" ? wallet.btcAddress : wallet.hemiAddress;
+  const card = which === "btc"
+    ? {
+        title: "Receive Bitcoin",
+        address,
+        explorer: btcAddressUrl(address),
+        note: "Native segwit Bitcoin. Do not send hemiBTC here.",
+      }
+    : which === "eth"
+      ? {
+          title: "Receive ETH on Ethereum",
+          address,
+          explorer: `${ETH_EXPLORER}/address/${address}`,
+          note: "Native ETH on Ethereum. This is the same address as the Hemi wallet, on Ethereum.",
+        }
+      : {
+          title: "Receive on Hemi",
+          address,
+          explorer: hemiAddressUrl(address),
+          note: "This address receives ETH, HEMI, VUSD, and hemiBTC on Hemi.",
+        };
+
+  return (
+    <div className="sheet-back" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <h2>{card.title}</h2>
+        <div className="choice">
+          <button className={which === "btc" ? "on" : ""} type="button" onClick={() => setWhich("btc")}>Bitcoin</button>
+          <button className={which === "eth" ? "on" : ""} type="button" onClick={() => setWhich("eth")}>Ethereum</button>
+          <button className={which === "hemi" ? "on" : ""} type="button" onClick={() => setWhich("hemi")}>Hemi</button>
+        </div>
+        <AddressCard address={card.address} explorer={card.explorer} note={card.note} />
+        <button className="ghost wide" type="button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+function AddressCard({ address, explorer, note }: { address: string; explorer: string; note: string }) {
   const [qr, setQr] = useState("");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let live = true;
+    setCopied(false);
     void QRCode.toDataURL(address, { margin: 1, width: 360, color: { dark: "#111111", light: "#ffffff" } }).then((url) => {
       if (live) setQr(url);
     });
@@ -118,65 +318,164 @@ function Receive({ onClose }: { onClose: () => void }) {
   }, [address]);
 
   return (
-    <div className="sheet-back" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <h2>Receive</h2>
-        <div className="choice">
-          <button className={which === "btc" ? "on" : ""} type="button" onClick={() => setWhich("btc")}>Bitcoin</button>
-          <button className={which === "hemi" ? "on" : ""} type="button" onClick={() => setWhich("hemi")}>Hemi</button>
-        </div>
-        {qr && <img className="qr" src={qr} alt="" />}
-        <div className="addr">{address}</div>
-        <div className="actions">
-          <button
-            className="btn primary"
-            type="button"
-            onClick={() => {
-              void navigator.clipboard.writeText(address);
-              setCopied(true);
-            }}
-          >
-            {copied ? "Copied" : "Copy"}
-          </button>
-          <a className="btn" href={which === "btc" ? btcAddressUrl(address) : hemiAddressUrl(address)} target="_blank" rel="noreferrer">
-            Explorer
-          </a>
-          <button className="ghost" type="button" onClick={onClose}>Close</button>
-        </div>
-        <p className="foot">
-          {which === "btc"
-            ? "Native segwit Bitcoin. Do not send hemiBTC here."
-            : "This address receives hemiBTC and the ETH used for Hemi gas."}
-        </p>
+    <>
+      {qr && <img className="qr" src={qr} alt="" />}
+      <div className="addr">{address}</div>
+      <div className="actions">
+        <button
+          className="btn primary"
+          type="button"
+          onClick={() => {
+            void navigator.clipboard.writeText(address);
+            setCopied(true);
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+        <a className="btn" href={explorer} target="_blank" rel="noreferrer">Explorer</a>
       </div>
-    </div>
+      <p className="foot">{note}</p>
+    </>
+  );
+}
+
+function TokenSheet({
+  initial,
+  start,
+  onClose,
+}: {
+  initial: HemiAsset;
+  start: "send" | "receive";
+  onClose: () => void;
+}) {
+  const w = useWallet();
+  const wallet = w.wallet!;
+  const [asset, setAsset] = useState<HemiAsset>(initial);
+  const b = w.balances;
+  const options: { id: HemiAsset; label: string }[] = [
+    { id: "eth", label: "ETH" },
+    { id: "hemi", label: b.hemiTokenSymbol },
+    { id: "vusd", label: b.vusdSymbol },
+    { id: "hemibtc", label: b.symbol },
+  ];
+  const spec = asset === "eth"
+    ? {
+        title: "Send ETH on Hemi",
+        receiveTitle: "Receive ETH on Hemi",
+        unit: "ETH",
+        decimals: 18,
+        balance: b.ethWei,
+        gas: undefined,
+        hint: "The network fee comes out of this Hemi ETH balance.",
+        note: "Send Hemi-network ETH to this address. It also receives HEMI, VUSD, and hemiBTC.",
+        submit: w.sendEth,
+      }
+    : asset === "hemi"
+      ? {
+          title: `Send ${b.hemiTokenSymbol}`,
+          receiveTitle: `Receive ${b.hemiTokenSymbol}`,
+          unit: b.hemiTokenSymbol,
+          decimals: b.hemiTokenDecimals,
+          balance: b.hemiTokenWei,
+          gas: b.ethWei,
+          hint: "HEMI moves on Hemi. Gas is paid in Hemi ETH.",
+          note: "HEMI on Hemi. This address is not an Ethereum token contract.",
+          submit: w.sendHemiToken,
+        }
+      : asset === "vusd"
+        ? {
+            title: `Send ${b.vusdSymbol}`,
+            receiveTitle: `Receive ${b.vusdSymbol}`,
+            unit: b.vusdSymbol,
+            decimals: b.vusdDecimals,
+            balance: b.vusdWei,
+            gas: b.ethWei,
+            hint: "VUSD moves on Hemi. Gas is paid in Hemi ETH.",
+            note: "VUSD on Hemi.",
+            submit: w.sendVusd,
+          }
+        : {
+            title: `Send ${b.symbol}`,
+            receiveTitle: `Receive ${b.symbol}`,
+            unit: b.symbol,
+            decimals: b.decimals,
+            balance: b.hemiSats,
+            gas: b.ethWei,
+            hint: "hemiBTC moves on Hemi. Gas is paid in Hemi ETH. Do not paste a Bitcoin address here.",
+            note: "hemiBTC on Hemi. Do not send native Bitcoin to this address.",
+            submit: w.sendHemi,
+          };
+
+  return (
+    <Send
+      title={spec.title}
+      unit={spec.unit}
+      decimals={spec.decimals}
+      balance={spec.balance}
+      placeholder="0x…"
+      gas={spec.gas}
+      hint={spec.hint}
+      onClose={onClose}
+      onSubmit={(to, amount) => spec.submit(to, amount)}
+      initialMode={start}
+      assets={options}
+      asset={asset}
+      onAsset={setAsset}
+      receive={{
+        title: spec.receiveTitle,
+        address: wallet.hemiAddress,
+        explorer: hemiAddressUrl(wallet.hemiAddress),
+        note: spec.note,
+      }}
+    />
   );
 }
 
 function Send({
   title,
   unit,
+  decimals,
   balance,
   placeholder,
   gas,
+  hint,
   onClose,
   onSubmit,
+  initialMode = "send",
+  assets,
+  asset,
+  onAsset,
+  receive,
 }: {
   title: string;
   unit: string;
+  decimals: number;
   balance: bigint | null;
   placeholder: string;
   gas?: bigint | null;
+  hint?: string;
   onClose: () => void;
   onSubmit: (to: string, amount: bigint) => Promise<string>;
+  initialMode?: "send" | "receive";
+  assets?: { id: HemiAsset; label: string }[];
+  asset?: HemiAsset;
+  onAsset?: (asset: HemiAsset) => void;
+  receive?: { title: string; address: string; explorer: string; note: string };
 }) {
+  const [mode, setMode] = useState<"send" | "receive">(initialMode);
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sure, setSure] = useState(false);
-  const sats = btcToSats(amount);
+  const parsed = parseUnits(amount, decimals);
   const blocked = gas != null && gas === 0n;
+
+  useEffect(() => {
+    setAmount("");
+    setError(null);
+    setSure(false);
+  }, [unit, decimals]);
 
   return (
     <div className="sheet-back" onClick={onClose}>
@@ -185,31 +484,51 @@ function Send({
         onClick={(e) => e.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
-          if (sats == null || sats <= 0n) {
-            setError("Enter an amount with up to 8 decimals.");
+          if (parsed == null || parsed <= 0n) {
+            setError(`Enter an amount with up to ${decimals} decimals.`);
             return;
           }
-          if (balance != null && sats > balance) {
-            setError(`Only ${satsToBtc(balance)} ${unit} is in this wallet.`);
+          if (balance != null && parsed > balance) {
+            setError(`Only ${formatUnits(balance, decimals)} ${unit} is in this wallet.`);
             return;
           }
           setBusy(true);
           setError(null);
-          void onSubmit(to.trim(), sats)
+          void onSubmit(to.trim(), parsed)
             .then(() => onClose())
             .catch((err) => setError(messageOf(err)))
             .finally(() => setBusy(false));
         }}
       >
-        <h2>{title}</h2>
+        <h2>{mode === "receive" && receive ? receive.title : title}</h2>
+        {assets && onAsset && (
+          <div className="choice">
+            {assets.map((item) => (
+              <button key={item.id} className={item.id === asset ? "on" : ""} type="button" onClick={() => onAsset(item.id)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {receive && (
+          <div className="choice">
+            <button className={mode === "send" ? "on" : ""} type="button" onClick={() => setMode("send")}>Send</button>
+            <button className={mode === "receive" ? "on" : ""} type="button" onClick={() => setMode("receive")}>Receive</button>
+          </div>
+        )}
+        {mode === "receive" && receive ? (
+          <AddressCard address={receive.address} explorer={receive.explorer} note={receive.note} />
+        ) : (
+        <>
         <label className="field">
           <span>To</span>
           <input value={to} placeholder={placeholder} onChange={(e) => setTo(e.target.value)} spellCheck={false} />
         </label>
         <label className="field">
-          <span>Amount · {balance == null ? "…" : `${satsToBtc(balance)} free`}</span>
+          <span>Amount · {balance == null ? "…" : `${formatUnits(balance, decimals)} free`}</span>
           <input inputMode="decimal" value={amount} placeholder="0.00" onChange={(e) => setAmount(e.target.value)} />
         </label>
+        {hint && <p className="hint">{hint}</p>}
         {blocked && <p className="fine">This Hemi address has no ETH for gas. Receive a small amount of ETH first.</p>}
         <label className="check">
           <input type="checkbox" checked={sure} onChange={(e) => setSure(e.target.checked)} />
@@ -218,6 +537,118 @@ function Send({
         {error && <p className="banner bad">{error}</p>}
         <button className="btn primary wide" disabled={busy || blocked || !sure} type="submit">
           {busy ? "Sending…" : "Send"}
+        </button>
+        </>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function EnablePasskey({ onClose }: { onClose: () => void }) {
+  const w = useWallet();
+  const [twoFactor, setTwoFactor] = useState(w.auth.hasPassword);
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const known = w.auth.hasPassword;
+
+  return (
+    <div className="sheet-back" onClick={onClose}>
+      <form
+        className="sheet"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (twoFactor && password.length < 8) {
+            setError("Password must be at least 8 characters.");
+            return;
+          }
+          if (twoFactor && !known && password !== again) {
+            setError("Passwords do not match.");
+            return;
+          }
+          setBusy(true);
+          setError(null);
+          void w.enablePasskey({ twoFactor, password: twoFactor ? password : undefined })
+            .then(() => onClose())
+            .catch((err) => setError(messageOf(err)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <h2>Enable passkey</h2>
+        <p className="hint">The browser asks you to create a passkey. That becomes the unlock.</p>
+        <label className="check">
+          <input type="checkbox" checked={twoFactor} onChange={(e) => setTwoFactor(e.target.checked)} />
+          <span>{known ? "Keep the password as 2FA" : "Also require a password (2FA)"}</span>
+        </label>
+        {twoFactor && (
+          <>
+            <label className="field">
+              <span>{known ? "Current password" : "Password"}</span>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={known ? "current-password" : "new-password"} />
+            </label>
+            {!known && (
+              <label className="field">
+                <span>Confirm password</span>
+                <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />
+              </label>
+            )}
+          </>
+        )}
+        {error && <p className="banner bad">{error}</p>}
+        <button className="btn primary wide" disabled={busy || (twoFactor && password.length < 8)} type="submit">
+          {busy ? "Waiting for passkey…" : twoFactor ? "Enable passkey with 2FA" : "Enable passkey"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Enable2fa({ onClose }: { onClose: () => void }) {
+  const w = useWallet();
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="sheet-back" onClick={onClose}>
+      <form
+        className="sheet"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (password.length < 8) {
+            setError("Password must be at least 8 characters.");
+            return;
+          }
+          if (password !== again) {
+            setError("Passwords do not match.");
+            return;
+          }
+          setBusy(true);
+          setError(null);
+          void w.enablePassword2fa(password)
+            .then(() => onClose())
+            .catch((err) => setError(messageOf(err)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <h2>Password 2FA</h2>
+        <p className="hint">After this, unlock asks for the password and then the passkey.</p>
+        <label className="field">
+          <span>Password</span>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        </label>
+        <label className="field">
+          <span>Confirm password</span>
+          <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />
+        </label>
+        {error && <p className="banner bad">{error}</p>}
+        <button className="btn primary wide" disabled={busy || password.length < 8} type="submit">
+          {busy ? "Saving…" : "Turn on 2FA"}
         </button>
       </form>
     </div>
@@ -231,7 +662,7 @@ function Phrase({ onClose }: { onClose: () => void }) {
     <div className="sheet-back" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <h2>Recovery phrase</h2>
-        <p className="fine">Anyone with these words can move the Bitcoin and the hemiBTC.</p>
+        <p className="fine">Anyone with these words can move the Bitcoin, the hemiBTC, the HEMI, the VUSD, and the ETH.</p>
         {open ? (
           <ol className="words">
             {phrase.split(" ").map((word, index) => (

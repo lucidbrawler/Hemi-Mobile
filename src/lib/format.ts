@@ -1,20 +1,27 @@
-const BTC = 100_000_000n;
-
-export function satsToBtc(sats: bigint): string {
-  const neg = sats < 0n;
-  const v = neg ? -sats : sats;
-  const whole = v / BTC;
-  const frac = (v % BTC).toString().padStart(8, "0").replace(/0+$/, "");
+export function formatUnits(amount: bigint, decimals: number): string {
+  const scale = 10n ** BigInt(decimals);
+  const neg = amount < 0n;
+  const v = neg ? -amount : amount;
+  const whole = v / scale;
+  const frac = (v % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
   const body = frac ? `${whole}.${frac}` : whole.toString();
   return neg ? `-${body}` : body;
 }
 
-export function btcToSats(input: string): bigint | null {
+export function parseUnits(input: string, decimals: number): bigint | null {
   const text = input.trim();
-  if (!/^\d+(\.\d{0,8})?$/.test(text)) return null;
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) return null;
+  if (!new RegExp(`^\\d+(\\.\\d{0,${decimals}})?$`).test(text)) return null;
   const [whole, frac = ""] = text.split(".");
-  const sats = BigInt(whole) * BTC + BigInt(frac.padEnd(8, "0"));
-  return sats;
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0");
+}
+
+export function satsToBtc(sats: bigint): string {
+  return formatUnits(sats, 8);
+}
+
+export function btcToSats(input: string): bigint | null {
+  return parseUnits(input, 8);
 }
 
 export function formatUsd(amount: number): string {
@@ -38,4 +45,20 @@ export function formatWhen(ms: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Rough time remaining until `targetMs`. */
+export function formatRemain(targetMs: number, now = Date.now()): string {
+  const left = targetMs - now;
+  if (left <= 15_000) return "Any moment";
+  const minutes = Math.ceil(left / 60_000);
+  if (minutes < 60) return minutes === 1 ? "About 1 minute" : `About ${minutes} minutes`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  if (hours < 48) {
+    if (rem === 0) return hours === 1 ? "About 1 hour" : `About ${hours} hours`;
+    return `About ${hours}h ${rem}m`;
+  }
+  const days = Math.round(hours / 24);
+  return days === 1 ? "About 1 day" : `About ${days} days`;
 }

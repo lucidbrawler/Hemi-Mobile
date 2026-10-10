@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev": "vite --host localhost --port 5173 --strictPort",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 5173 --strictPort",
+    "preview": "vite preview --host localhost --port 5173 --strictPort",
     "typecheck": "tsc --noEmit",
     "selfcheck": "node --experimental-strip-types scripts/selfcheck.ts",
     "android:sync": "npm run build && npx cap sync android",

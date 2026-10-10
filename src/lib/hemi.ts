@@ -1,7 +1,10 @@
 import { Contract, JsonRpcProvider, Wallet, getAddress, isAddress } from "ethers";
-import { HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, MEMPOOL, VAULT_FACTORY, VAULT_INDEX } from "../chain";
+import { HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MEMPOOL, VAULT_FACTORY, VAULT_INDEX, VUSD } from "../chain";
 
 const erc20Abi = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
   "function balanceOf(address) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)",
 ];
@@ -40,14 +43,30 @@ export function requireEvmAddress(value: string): string {
   return getAddress(text);
 }
 
-export async function readHemiBalances(address: string): Promise<{ hemiSats: bigint; ethWei: bigint }> {
+export type HemiHoldings = {
+  hemiSats: bigint;
+  ethWei: bigint;
+  symbol: string;
+  decimals: number;
+};
+
+/** Native ETH plus the hemiBTC ERC-20 held by this Hemi address. */
+export async function readHemiBalances(address: string): Promise<HemiHoldings> {
   const provider = hemiProvider();
   const token = new Contract(HEMIBTC, erc20Abi, provider);
-  const [hemiSats, ethWei] = await Promise.all([
+  const [hemiSats, ethWei, symbol, decimals] = await Promise.all([
     token.balanceOf(address) as Promise<bigint>,
     provider.getBalance(address),
+    token.symbol().catch(() => "hemiBTC") as Promise<string>,
+    token.decimals().catch(() => 8) as Promise<bigint | number>,
   ]);
-  return { hemiSats, ethWei };
+  const places = Number(decimals);
+  return {
+    hemiSats,
+    ethWei,
+    symbol: symbol || "hemiBTC",
+    decimals: Number.isInteger(places) && places >= 0 && places <= 18 ? places : 8,
+  };
 }
 
 export type VaultQuote = {
@@ -111,12 +130,50 @@ export function fallbackVaultFee(amount: bigint, bps: bigint, minFee: bigint): b
   return proportional > minFee ? proportional : minFee;
 }
 
-export async function sendHemiBtc(privateKey: string, to: string, amount: bigint): Promise<string> {
+export async function sendEth(privateKey: string, to: string, amount: bigint): Promise<string> {
   const wallet = new Wallet(privateKey, hemiProvider());
-  const token = new Contract(HEMIBTC, erc20Abi, wallet);
+  const tx = await wallet.sendTransaction({ to: requireEvmAddress(to), value: amount });
+  const receipt = await tx.wait();
+  return receipt?.hash ?? tx.hash;
+}
+
+export type Erc20Balance = {
+  raw: bigint;
+  symbol: string;
+  decimals: number;
+};
+
+/** ERC-20 balance, symbol, and decimals for one Hemi token. */
+export async function readErc20(
+  holder: string,
+  tokenAddress: string,
+  fallbackSymbol: string,
+  fallbackDecimals: number,
+): Promise<Erc20Balance> {
+  const token = new Contract(tokenAddress, erc20Abi, hemiProvider());
+  const [raw, symbol, decimals] = await Promise.all([
+    token.balanceOf(holder) as Promise<bigint>,
+    token.symbol().catch(() => fallbackSymbol) as Promise<string>,
+    token.decimals().catch(() => fallbackDecimals) as Promise<bigint | number>,
+  ]);
+  const places = Number(decimals);
+  return {
+    raw,
+    symbol: symbol || fallbackSymbol,
+    decimals: Number.isInteger(places) && places >= 0 && places <= 18 ? places : fallbackDecimals,
+  };
+}
+
+export async function sendErc20(privateKey: string, tokenAddress: string, to: string, amount: bigint): Promise<string> {
+  const wallet = new Wallet(privateKey, hemiProvider());
+  const token = new Contract(tokenAddress, erc20Abi, wallet);
   const tx = await token.transfer(requireEvmAddress(to), amount);
   const receipt = await tx.wait();
   return receipt?.hash ?? tx.hash;
+}
+
+export async function sendHemiBtc(privateKey: string, to: string, amount: bigint): Promise<string> {
+  return sendErc20(privateKey, HEMIBTC, to, amount);
 }
 
 export async function withdrawToBitcoin(privateKey: string, btcAddress: string, amount: bigint): Promise<string> {
@@ -156,13 +213,20 @@ export function btcAddressUrl(address: string): string {
   return `${MEMPOOL}/address/${address}`;
 }
 
+export type ChainLeg = {
+  /** Signed raw units. Negative leaves the wallet. */
+  amount: string;
+  decimals: number;
+  symbol: string;
+};
+
 export type ChainRow = {
   id: string;
   when: number;
   title: string;
   detail: string;
   href: string;
-  amount: string;
+  legs: ChainLeg[];
 };
 
 type MempoolTx = {
@@ -193,37 +257,235 @@ export async function readBtcActivity(address: string): Promise<ChainRow[]> {
       title: delta >= 0n ? "Bitcoin received" : "Bitcoin sent",
       detail: tx.status.confirmed ? "Confirmed" : "In the mempool",
       href: btcTxUrl(tx.txid),
-      amount: delta.toString(),
+      legs: [{ amount: delta.toString(), decimals: 8, symbol: "BTC" }],
     };
   });
 }
 
-type ExplorerTransfer = {
-  tx_hash: string;
-  timestamp: string;
-  from: { hash: string };
-  to: { hash: string };
-  total: { value: string; decimals: string };
+const KNOWN_TOKENS: Record<string, { symbol: string; decimals: number }> = {
+  [HEMIBTC.toLowerCase()]: { symbol: "hemiBTC", decimals: 8 },
+  [HEMI_TOKEN.toLowerCase()]: { symbol: "HEMI", decimals: 18 },
+  [VUSD.toLowerCase()]: { symbol: "VUSD", decimals: 18 },
 };
 
+type Party = { hash?: string } | null;
+
+type ExplorerTransfer = {
+  tx_hash?: string;
+  timestamp?: string;
+  from?: Party;
+  to?: Party;
+  total?: { value?: string; decimals?: string };
+  token?: { address?: string; symbol?: string; decimals?: string; type?: string };
+};
+
+type ExplorerTx = {
+  hash?: string;
+  timestamp?: string;
+  from?: Party;
+  to?: Party;
+  value?: string;
+  status?: string;
+};
+
+type ExplorerInternal = {
+  transaction_hash?: string;
+  tx_hash?: string;
+  timestamp?: string;
+  from?: Party;
+  to?: Party;
+  value?: string;
+  success?: boolean;
+  type?: string;
+};
+
+type LegAcc = { symbol: string; decimals: number; delta: bigint };
+
+type TxAcc = {
+  hash: string;
+  when: number;
+  legs: Map<string, LegAcc>;
+  other: string;
+};
+
+function party(value: Party | undefined): string {
+  return value?.hash?.toLowerCase() ?? "";
+}
+
+function rawInt(value: unknown): bigint | null {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  return BigInt(value);
+}
+
+function asDecimals(value: unknown, fallback: number): number {
+  const n = typeof value === "string" || typeof value === "number" ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 0 || n > 18) return fallback;
+  return n;
+}
+
+function whenOf(timestamp: string | undefined): number {
+  const ms = timestamp ? Date.parse(timestamp) : NaN;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function shortParty(addr: string): string {
+  return addr ? `${addr.slice(0, 8)}…` : "Hemi";
+}
+
+function tokenMeta(token: ExplorerTransfer["token"]): { key: string; symbol: string; decimals: number } | null {
+  const address = token?.address?.toLowerCase() ?? "";
+  if (!/^0x[0-9a-f]{40}$/.test(address)) return null;
+  const known = KNOWN_TOKENS[address];
+  const symbol = (known?.symbol ?? token?.symbol ?? "TOKEN").replace(/[^\w.$+-]/g, "").slice(0, 12) || "TOKEN";
+  return {
+    key: address,
+    symbol,
+    decimals: asDecimals(token?.decimals, known?.decimals ?? 18),
+  };
+}
+
+function touch(map: Map<string, TxAcc>, hash: string, when: number): TxAcc {
+  const row = map.get(hash) ?? { hash, when, legs: new Map(), other: "" };
+  if (when > row.when) row.when = when;
+  map.set(hash, row);
+  return row;
+}
+
+function addLeg(row: TxAcc, key: string, symbol: string, decimals: number, delta: bigint, other: string) {
+  if (delta === 0n) return;
+  const cur = row.legs.get(key) ?? { symbol, decimals, delta: 0n };
+  cur.delta += delta;
+  cur.symbol = symbol || cur.symbol;
+  cur.decimals = decimals;
+  row.legs.set(key, cur);
+  if (other) row.other = other;
+}
+
+/** Group token and ETH legs that share a transaction. A pay leg plus a receive leg is a swap. */
+export function buildHemiRows(input: {
+  mine: string;
+  transfers: ExplorerTransfer[];
+  transactions: ExplorerTx[];
+  internals: ExplorerInternal[];
+}): ChainRow[] {
+  const mine = input.mine.toLowerCase();
+  const grouped = new Map<string, TxAcc>();
+  const failed = new Set<string>();
+  const tops = new Map<string, { from: string; to: string; value: bigint }>();
+
+  for (const tx of input.transactions) {
+    const hash = tx.hash?.toLowerCase() ?? "";
+    if (!/^0x[0-9a-f]{64}$/.test(hash)) continue;
+    if (tx.status === "error") {
+      failed.add(hash);
+      continue;
+    }
+    const value = rawInt(tx.value);
+    if (value == null || value === 0n) continue;
+    const from = party(tx.from);
+    const to = party(tx.to);
+    tops.set(hash, { from, to, value });
+    const row = touch(grouped, hash, whenOf(tx.timestamp));
+    if (from === mine && to !== mine) addLeg(row, "eth", "ETH", 18, -value, to);
+    if (to === mine && from !== mine) addLeg(row, "eth", "ETH", 18, value, from);
+  }
+
+  for (const transfer of input.transfers) {
+    const hash = transfer.tx_hash?.toLowerCase() ?? "";
+    if (!/^0x[0-9a-f]{64}$/.test(hash) || failed.has(hash)) continue;
+    if (transfer.token?.type && transfer.token.type !== "ERC-20") continue;
+    const meta = tokenMeta(transfer.token);
+    const value = rawInt(transfer.total?.value);
+    if (!meta || value == null || value === 0n) continue;
+    const from = party(transfer.from);
+    const to = party(transfer.to);
+    const row = touch(grouped, hash, whenOf(transfer.timestamp));
+    if (from === mine && to !== mine) addLeg(row, meta.key, meta.symbol, meta.decimals, -value, to);
+    if (to === mine && from !== mine) addLeg(row, meta.key, meta.symbol, meta.decimals, value, from);
+  }
+
+  for (const call of input.internals) {
+    if (call.success === false || call.type === "delegatecall") continue;
+    const hash = (call.transaction_hash ?? call.tx_hash)?.toLowerCase() ?? "";
+    if (!/^0x[0-9a-f]{64}$/.test(hash) || failed.has(hash)) continue;
+    const value = rawInt(call.value);
+    if (value == null || value === 0n) continue;
+    const from = party(call.from);
+    const to = party(call.to);
+    const top = tops.get(hash);
+    if (top && top.from === from && top.to === to && top.value === value) continue;
+    const row = touch(grouped, hash, whenOf(call.timestamp));
+    if (from === mine && to !== mine) addLeg(row, "eth", "ETH", 18, -value, to);
+    if (to === mine && from !== mine) addLeg(row, "eth", "ETH", 18, value, from);
+  }
+
+  const rows: ChainRow[] = [];
+  for (const row of grouped.values()) {
+    const legs = [...row.legs.values()]
+      .filter((leg) => leg.delta !== 0n)
+      .sort((a, b) => {
+        if ((a.delta < 0n) !== (b.delta < 0n)) return a.delta < 0n ? -1 : 1;
+        const absA = a.delta < 0n ? -a.delta : a.delta;
+        const absB = b.delta < 0n ? -b.delta : b.delta;
+        if (absA === absB) return 0;
+        return absA > absB ? -1 : 1;
+      });
+    if (legs.length === 0) continue;
+    const spent = legs.filter((leg) => leg.delta < 0n);
+    const gained = legs.filter((leg) => leg.delta > 0n);
+    const swap = spent.length > 0 && gained.length > 0;
+    const one = legs.length === 1 ? legs[0] : null;
+    const inbound = one != null && one.delta > 0n;
+    rows.push({
+      id: row.hash,
+      when: row.when,
+      title: swap ? "Swap" : one ? `${one.symbol} ${inbound ? "received" : "sent"}` : spent.length ? "Sent" : "Received",
+      detail: swap
+        ? `${spent[0].symbol} → ${gained[0].symbol}`
+        : one
+          ? `${inbound ? "From" : "To"} ${shortParty(row.other)}`
+          : legs.map((leg) => leg.symbol).join(", "),
+      href: hemiTxUrl(row.hash),
+      legs: legs.slice(0, 3).map((leg) => ({
+        amount: leg.delta.toString(),
+        decimals: leg.decimals,
+        symbol: leg.symbol,
+      })),
+    });
+  }
+  return rows.sort((a, b) => b.when - a.when).slice(0, 40);
+}
+
+async function readExplorer<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export async function readHemiActivity(address: string): Promise<ChainRow[]> {
-  const url = `${HEMI_EXPLORER}/api/v2/addresses/${address}/token-transfers?type=ERC-20&token=${HEMIBTC}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("hemiBTC history is unavailable.");
-  const body = (await res.json()) as { items?: ExplorerTransfer[] };
-  const mine = address.toLowerCase();
-  return (body.items ?? []).slice(0, 12).map((row) => {
-    const inbound = row.to.hash.toLowerCase() === mine;
-    const sign = inbound ? 1n : -1n;
-    return {
-      id: row.tx_hash,
-      when: Date.parse(row.timestamp),
-      title: inbound ? "hemiBTC received" : "hemiBTC sent",
-      detail: inbound ? `From ${row.from.hash.slice(0, 8)}…` : `To ${row.to.hash.slice(0, 8)}…`,
-      href: hemiTxUrl(row.tx_hash),
-      amount: (sign * BigInt(row.total.value)).toString(),
-    };
+  const base = `${HEMI_EXPLORER}/api/v2/addresses/${address}`;
+  const [transfers, transactions, internals] = await Promise.all([
+    readExplorer<{ items?: ExplorerTransfer[] }>(`${base}/token-transfers?type=ERC-20`),
+    readExplorer<{ items?: ExplorerTx[] }>(`${base}/transactions`),
+    readExplorer<{ items?: ExplorerInternal[] }>(`${base}/internal-transactions`),
+  ]);
+  if (!transfers && !transactions) throw new Error("Hemi history is unavailable.");
+  return buildHemiRows({
+    mine: address,
+    transfers: (transfers?.items ?? []).slice(0, 50),
+    transactions: (transactions?.items ?? []).slice(0, 50),
+    internals: (internals?.items ?? []).slice(0, 50),
   });
+}
+
+/** True when Hemi has mined this transaction successfully. */
+export async function readHemiMined(hash: string): Promise<boolean> {
+  const receipt = await hemiProvider().getTransactionReceipt(hash);
+  return receipt != null && receipt.status === 1;
 }
 
 export async function readBtcConfirmations(txid: string): Promise<number> {

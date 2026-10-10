@@ -55,6 +55,26 @@ export function estimateSpend(utxos: Utxo[], amount: bigint, feeRate: number, wi
   return BigInt(feeRate) * guessVsize(Math.max(1, count), outputs);
 }
 
+/** True when `address` receives at least `minSats` in a transaction at or after `sinceMs`. */
+export async function findBtcCredit(address: string, sinceMs: number, minSats: bigint): Promise<boolean> {
+  if (minSats <= 0n) return false;
+  const res = await fetch(`${MEMPOOL}/api/address/${address}/txs`);
+  if (!res.ok) return false;
+  const txs = (await res.json()) as {
+    status?: { confirmed?: boolean; block_time?: number };
+    vout?: { scriptpubkey_address?: string; value?: number }[];
+  }[];
+  for (const tx of txs) {
+    const when = tx.status?.block_time ? tx.status.block_time * 1000 : Date.now();
+    if (when + 120_000 < sinceMs) continue;
+    const got = (tx.vout ?? [])
+      .filter((out) => out.scriptpubkey_address === address)
+      .reduce((sum, out) => sum + BigInt(out.value ?? 0), 0n);
+    if (got >= minSats) return true;
+  }
+  return false;
+}
+
 export async function fetchUtxos(address: string): Promise<Utxo[]> {
   const res = await fetch(`${MEMPOOL}/api/address/${address}/utxo`);
   if (!res.ok) throw new Error("Could not load Bitcoin coins.");
