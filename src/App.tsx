@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useWallet } from "./state";
 import { Activity } from "./ui/Activity";
 import { Buddy } from "./ui/Buddy";
@@ -7,13 +7,18 @@ import { Gate } from "./ui/Gate";
 import { Home } from "./ui/Home";
 import { Brand } from "./ui/mark";
 import { Pop } from "./ui/Pop";
+import { Tools } from "./ui/Tools";
 import { Tunnel } from "./ui/Tunnel";
 
-type Tab = "wallet" | "pop" | "tunnel" | "activity";
+type Place = "wallet" | "activity" | "tools" | "pop" | "tunnel";
 
 export function App() {
   const w = useWallet();
-  const [tab, setTab] = useState<Tab>("wallet");
+  const [place, setPlace] = useState<Place>("wallet");
+
+  useEffect(() => {
+    document.querySelector(".screen")?.scrollTo(0, 0);
+  }, [place]);
 
   if (!w.ready) {
     return (
@@ -31,18 +36,18 @@ export function App() {
     );
   }
 
+  const toolsOn = place === "tools" || place === "pop" || place === "tunnel";
   const nav = (
     <nav className="nav">
-      <button className={tab === "wallet" ? "on" : ""} type="button" onClick={() => setTab("wallet")}>Wallet</button>
-      <button className={tab === "pop" ? "on" : ""} type="button" onClick={() => setTab("pop")}>PoP</button>
-      <button className={tab === "tunnel" ? "on" : ""} type="button" onClick={() => setTab("tunnel")}>Tunnel</button>
-      <button className={tab === "activity" ? "on" : ""} type="button" onClick={() => setTab("activity")}>Activity</button>
+      <button className={place === "wallet" ? "on" : ""} type="button" onClick={() => setPlace("wallet")}>Wallet</button>
+      <button className={place === "activity" ? "on" : ""} type="button" onClick={() => setPlace("activity")}>Activity</button>
+      <button className={toolsOn ? "on" : ""} type="button" onClick={() => setPlace("tools")}>Tools</button>
     </nav>
   );
 
   return (
     <Stage nav={nav}>
-      <Brand subtitle="BTC, hemiBTC, ETH, HEMI, and VUSD" />
+      <Brand />
       {w.notice && (
         <div className="banner ok">
           <span>{w.notice}</span>
@@ -55,10 +60,14 @@ export function App() {
           <button type="button" onClick={w.clearFlash}>Close</button>
         </div>
       )}
-      {tab === "wallet" && <Home />}
-      {tab === "pop" && <Pop />}
-      {tab === "tunnel" && <Tunnel />}
-      {tab === "activity" && <Activity />}
+      {place === "wallet" && <Home />}
+      {place === "activity" && <Activity />}
+      {place === "tools" && <Tools onOpen={setPlace} />}
+      {(place === "pop" || place === "tunnel") && (
+        <button className="back" type="button" onClick={() => setPlace("tools")}>Tools</button>
+      )}
+      {place === "pop" && <Pop />}
+      {place === "tunnel" && <Tunnel />}
     </Stage>
   );
 }

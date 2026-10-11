@@ -9,8 +9,8 @@ import { formatUnits, parseUnits } from "../lib/format";
 import { messageOf } from "../lib/errors";
 import { celebrate, pokeBuddy } from "../lib/fx";
 import {
-  formatFee,
   loadLpRewards,
+  positionFeeLine,
   type LpPosition,
   type LpRewardSnapshot,
 } from "../lib/lpRewards";
@@ -65,10 +65,10 @@ const RANGE_PRESETS = [
 type RangePreset = (typeof RANGE_PRESETS)[number]["id"];
 type SheetMode = "deposit" | "rewards";
 
-export function PoolSheet({ onClose }: { onClose: () => void }) {
+export function PoolSheet({ onClose, initialMode = "deposit" }: { onClose: () => void; initialMode?: SheetMode }) {
   const w = useWallet();
   const wallet = w.wallet!;
-  const [mode, setMode] = useState<SheetMode>("deposit");
+  const [mode, setMode] = useState<SheetMode>(initialMode);
   const [poolId, setPoolId] = useState(DEFAULT_POOL_ID);
   const [preset, setPreset] = useState<RangePreset>("full");
   const [lowText, setLowText] = useState("");
@@ -346,8 +346,10 @@ export function PoolSheet({ onClose }: { onClose: () => void }) {
         }}
       >
         <div className="swap-top">
-          <h2>Add liquidity</h2>
-          <span className="swap-spot">{pool.venue === "sushi" ? "Sushi" : "BrownFi"}</span>
+          <h2>{mode === "rewards" ? "Rewards" : "Add liquidity"}</h2>
+          {mode === "deposit" && (
+            <span className="swap-spot">{pool.venue === "sushi" ? "Sushi" : "BrownFi"}</span>
+          )}
         </div>
         <div className="rowline">
           <span>View</span>
@@ -835,9 +837,7 @@ function depositClause(quote: PoolQuote, label0: string, label1: string, dec0: n
 }
 
 function feeLine(position: LpPosition): string {
-  if (!position.feesKnown) return "Could not read";
-  const parts = [formatFee(position.fee0, position.token0), formatFee(position.fee1, position.token1)].filter((part): part is string => part != null);
-  return parts.length > 0 ? parts.join(" · ") : "None yet";
+  return positionFeeLine(position);
 }
 
 function priceNumber(text: string): number {

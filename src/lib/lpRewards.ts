@@ -210,3 +210,10 @@ export function formatFee(amount: bigint, asset: PoolAsset): string | null {
   const spec = assetSpec(asset);
   return `${formatUnits(amount, spec.decimals)} ${spec.label}`;
 }
+
+export function positionFeeLine(position: LpPosition): string {
+  if (!position.feesKnown) return "Could not read";
+  const parts = [formatFee(position.fee0, position.token0), formatFee(position.fee1, position.token1)]
+    .filter((part): part is string => part != null);
+  return parts.length > 0 ? parts.join(" · ") : "None yet";
+}

@@ -8,6 +8,7 @@ import {
   type StakePosition,
   readStake,
   stakeNeedsApproval,
+  stakeRewardLine,
   stakeUnlockAt,
   stakeWeightLabel,
   type StakePresetId,
@@ -32,10 +33,13 @@ function readyRewards(positions: StakePosition[]): string {
   return [...totals].map(([symbol, row]) => `${formatUnits(row.amount, row.decimals)} ${symbol}`).join(" · ");
 }
 
-export function StakeSheet({ onClose }: { onClose: () => void }) {
+type StakeMode = "lock" | "rewards";
+
+export function StakeSheet({ onClose, initialMode = "lock" }: { onClose: () => void; initialMode?: StakeMode }) {
   const w = useWallet();
   const wallet = w.wallet!;
   const free = w.balances.hemiTokenWei;
+  const [mode, setMode] = useState<StakeMode>(initialMode);
   const [amount, setAmount] = useState("");
   const [term, setTerm] = useState<StakePresetId>("1y");
   const [sure, setSure] = useState(false);
@@ -120,7 +124,13 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const ready = parsed != null && parsed >= STAKE_MIN_HEMI && (free == null || parsed <= free) && !noGas && sure && !busy;
+  function setView(next: StakeMode) {
+    setMode(next);
+    setSure(false);
+    setError(null);
+  }
+
+  const ready = mode === "lock" && parsed != null && parsed >= STAKE_MIN_HEMI && (free == null || parsed <= free) && !noGas && sure && !busy;
   const label = busy === "approve"
     ? "Approving…"
     : busy === "lock"
@@ -162,9 +172,40 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
         }}
       >
         <div className="swap-top">
-          <h2>Stake</h2>
+          <h2>{mode === "rewards" ? "Rewards" : "Stake"}</h2>
           <span className="swap-spot">veHEMI</span>
         </div>
+        <div className="rowline">
+          <span>View</span>
+          <div className="swap-routes">
+            <button type="button" className={mode === "lock" ? "on" : ""} onClick={() => setView("lock")}>Lock</button>
+            <button type="button" className={mode === "rewards" ? "on" : ""} onClick={() => setView("rewards")}>Rewards</button>
+          </div>
+        </div>
+        {mode === "rewards" ? (
+          <StakeRewards
+            positions={positions}
+            error={error}
+            sure={sure}
+            setSure={setSure}
+            busy={busy}
+            noGas={noGas}
+            owed={owed}
+            readyText={readyText}
+            canClaim={canClaim}
+            claimLabel={claimLabel}
+            claimPositions={claimPositions}
+            onUnlock={(tokenId) => {
+              setBusy("unlock");
+              setError(null);
+              void w.stakeUnlock(tokenId, (phase) => setBusy(phase))
+                .then(() => reload())
+                .catch((err) => setError(messageOf(err)))
+                .finally(() => setBusy(null));
+            }}
+          />
+        ) : (
+          <>
         <p className="hint">
           Lock HEMI for voting weight and epoch rewards. The lock rounds down to a 6 day epoch and cannot be opened early.
         </p>
@@ -227,62 +268,95 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
         <button className={ready ? "btn primary wide" : "btn wide swap-wait"} disabled={!ready} type="submit">
           {label}
         </button>
-
-        <div className="kicker" style={{ margin: "18px 0 10px" }}><span>Positions</span></div>
-        {positions != null && positions.length > 0 && (
-          <>
-            <div className="rowline">
-              <span>Ready to claim</span>
-              <b>{readyText || "None yet"}</b>
-            </div>
-            <button
-              className={canClaim ? "btn primary wide" : "btn wide swap-wait"}
-              type="button"
-              disabled={!canClaim}
-              onClick={() => void claimPositions(owed)}
-            >
-              {claimLabel}
-            </button>
           </>
         )}
-        {positions == null && !error && <p className="empty">Loading positions…</p>}
-        {positions?.length === 0 && <p className="empty">No veHEMI positions on this address yet.</p>}
-        <div className="list">
-          {positions?.map((position) => {
-            const owed = position.rewards?.some((reward) => reward.amount > 0n) ?? false;
-            return (
-              <div className="card stake-pos" key={position.tokenId}>
-                <div className="rowline">
-                  <span>Locked</span>
-                  <b>{formatUnits(position.amount, 18)} HEMI</b>
-                </div>
-                <div className="rowline">
-                  <span>Weight</span>
-                  <b>{position.weight == null ? "—" : `${formatUnits(position.weight, 18)} veHEMI`}</b>
-                </div>
-                <div className="rowline">
-                  <span>{position.expired ? "Unlocked" : "Unlocks"}</span>
-                  <b>{unlockLabel(position.end)}</b>
-                </div>
-                <div className="rowline">
-                  <span>Rewards</span>
-                  <b>
-                    {position.rewards == null
-                      ? "Unavailable"
-                      : position.rewards.length === 0
-                        ? "None yet"
-                        : position.rewards.map((reward) => `${formatUnits(reward.amount, reward.decimals)} ${reward.symbol}`).join(" · ")}
-                  </b>
-                </div>
+      </form>
+    </div>
+  );
+}
+
+function StakeRewards({
+  positions,
+  error,
+  sure,
+  setSure,
+  busy,
+  noGas,
+  owed,
+  readyText,
+  canClaim,
+  claimLabel,
+  claimPositions,
+  onUnlock,
+}: {
+  positions: StakePosition[] | null;
+  error: string | null;
+  sure: boolean;
+  setSure: (value: boolean) => void;
+  busy: string | null;
+  noGas: boolean;
+  owed: StakePosition[];
+  readyText: string;
+  canClaim: boolean;
+  claimLabel: string;
+  claimPositions: (rows: StakePosition[]) => Promise<void>;
+  onUnlock: (tokenId: bigint) => void;
+}) {
+  const rows = positions ?? [];
+  const canAct = rows.some((position) => position.expired || position.rewards?.some((reward) => reward.amount > 0n));
+
+  return (
+    <div>
+      <p className="fine">
+        Epoch rewards accrue on each lock in HEMI, hemiBTC, and USDC. A claim sends whatever the position has earned to this wallet.
+      </p>
+      {positions == null && !error && <p className="empty">Loading positions…</p>}
+      {positions != null && rows.length === 0 && (
+        <p className="empty">No staked HEMI in this wallet yet. A lock creates one, and its epoch rewards show up here.</p>
+      )}
+      {rows.length > 0 && (
+        <div className="rowline">
+          <span>Ready to claim</span>
+          <b>{readyText || "None yet"}</b>
+        </div>
+      )}
+      {canAct && (
+        <label className="check">
+          <input type="checkbox" checked={sure} onChange={(event) => setSure(event.target.checked)} />
+          <span>Broadcast this on mainnet.</span>
+        </label>
+      )}
+      <div className="list">
+        {rows.map((position) => {
+          const hasRewards = position.rewards?.some((reward) => reward.amount > 0n) ?? false;
+          return (
+            <div className="card stake-pos" key={position.tokenId}>
+              <div className="rowline">
+                <span>Locked</span>
+                <b>{formatUnits(position.amount, 18)} HEMI</b>
+              </div>
+              <div className="rowline">
+                <span>Weight</span>
+                <b>{position.weight == null ? "—" : `${formatUnits(position.weight, 18)} veHEMI`}</b>
+              </div>
+              <div className="rowline">
+                <span>{position.expired ? "Unlocked" : "Unlocks"}</span>
+                <b>{unlockLabel(position.end)}</b>
+              </div>
+              <div className="rowline">
+                <span>Rewards</span>
+                <b>{stakeRewardLine(position)}</b>
+              </div>
+              {(hasRewards || position.expired) && (
                 <div className="actions">
-                  {owed && (
+                  {hasRewards && (
                     <button
                       className="ghost"
                       type="button"
                       disabled={!sure || busy != null || noGas}
                       onClick={() => void claimPositions([position])}
                     >
-                      {busy === "claim" ? "Claiming…" : "Claim"}
+                      {busy === "claim" ? "Claiming…" : !sure ? "Confirm on mainnet" : noGas ? "Need ETH for gas" : "Claim"}
                     </button>
                   )}
                   {position.expired && (
@@ -290,24 +364,31 @@ export function StakeSheet({ onClose }: { onClose: () => void }) {
                       className="ghost"
                       type="button"
                       disabled={!sure || busy != null || noGas}
-                      onClick={() => {
-                        setBusy("unlock");
-                        setError(null);
-                        void w.stakeUnlock(BigInt(position.tokenId), (phase) => setBusy(phase))
-                          .then(() => reload())
-                          .catch((err) => setError(messageOf(err)))
-                          .finally(() => setBusy(null));
-                      }}
+                      onClick={() => onUnlock(BigInt(position.tokenId))}
                     >
                       {busy === "record" ? "Recording…" : busy === "unlock" ? "Unlocking…" : "Unlock HEMI"}
                     </button>
                   )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </form>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {owed.length > 1 && (
+        <button
+          className={canClaim ? "btn primary wide" : "btn wide swap-wait"}
+          type="button"
+          disabled={!canClaim}
+          onClick={() => void claimPositions(owed)}
+        >
+          {claimLabel}
+        </button>
+      )}
+      {error && <p className="banner bad">{error}</p>}
+      {noGas && canAct && (
+        <p className="fine">This Hemi address has no ETH for gas. Receive a small amount of ETH first.</p>
+      )}
     </div>
   );
 }

@@ -10,23 +10,35 @@ import vetroIcon from "../assets/vetro.svg";
 import vusdIcon from "../assets/vusd.svg";
 import wbtcIcon from "../assets/wbtc.svg";
 import { ETH_EXPLORER, HEMIBTC, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
-import { formatUnits, formatUsd, parseUnits, satsToBtc, shortAddr } from "../lib/format";
+import { formatUnits, formatUsd, formatWhen, parseUnits, satsToBtc, shortAddr } from "../lib/format";
 import { btcAddressUrl, hemiAddressUrl } from "../lib/hemi";
 import { messageOf } from "../lib/errors";
+import { loadLpRewards, positionFeeLine, type LpRewardSnapshot } from "../lib/lpRewards";
+import { readStake, stakeRewardLine, type StakePosition } from "../lib/stake";
 import { useWallet } from "../state";
 import { PoolSheet } from "./PoolSheet";
 import { StakeSheet } from "./StakeSheet";
 import { SwapSheet } from "./SwapSheet";
 
-type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "pool" | "phrase" | "passkey" | "2fa";
+type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "stake-rewards" | "pool" | "rewards" | "phrase" | "passkey" | "2fa";
 type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc" | "usdt";
 
 export function Home() {
   const w = useWallet();
   const wallet = w.wallet!;
   const [sheet, setSheet] = useState<Sheet>(null);
+  const [lpReload, setLpReload] = useState(0);
+  const [stakeReload, setStakeReload] = useState(0);
   const [tokenAsset, setTokenAsset] = useState<HemiAsset>("hemibtc");
   const [tokenMode, setTokenMode] = useState<"send" | "receive">("send");
+  function closePool() {
+    setSheet(null);
+    setLpReload((value) => value + 1);
+  }
+  function closeStake() {
+    setSheet(null);
+    setStakeReload((value) => value + 1);
+  }
   function openToken(asset: HemiAsset, mode: "send" | "receive") {
     setTokenAsset(asset);
     setTokenMode(mode);
@@ -42,7 +54,7 @@ export function Home() {
       <section className="hero">
         <div className="kicker">
           <span>Total bitcoin</span>
-          <button className="ghost" type="button" onClick={() => void w.refresh()} disabled={w.refreshing}>
+          <button className="ghost" type="button" onClick={() => { void w.refresh(); setLpReload((value) => value + 1); setStakeReload((value) => value + 1); }} disabled={w.refreshing}>
             {w.refreshing ? "Refreshing…" : "Refresh"}
           </button>
         </div>
@@ -74,9 +86,9 @@ export function Home() {
       <section className="card hemi-wallet">
         <div className="kicker"><span>Hemi wallet</span></div>
         <p className="hint">
-          Created with this phrase. Bitcoin you tunnel is minted here as {w.balances.symbol}. HEMI, VUSD, Vetro, WBTC, USDT, and ETH already on Hemi live on this address.
+          HEMI, VUSD, Vetro, WBTC, USDT, ETH, and bitcoin you tunnel as {w.balances.symbol} live on this Hemi address.
         </p>
-        <p className="addr">{wallet.hemiAddress}</p>
+        <CopyAddress address={wallet.hemiAddress} />
         <Holding
           icon={hemiEthIcon}
           ticker="ETH"
@@ -138,6 +150,18 @@ export function Home() {
           <button className="ghost" type="button" onClick={() => setSheet("pool")}>Add liquidity</button>
         </div>
       </section>
+
+      <LiquidityCard
+        owner={wallet.hemiAddress}
+        reloadKey={lpReload}
+        onRewards={() => setSheet("rewards")}
+      />
+
+      <StakeCard
+        owner={wallet.hemiAddress}
+        reloadKey={stakeReload}
+        onRewards={() => setSheet("stake-rewards")}
+      />
 
       <section className="card secure">
         <div className="kicker"><span>Unlock</span></div>
@@ -211,12 +235,53 @@ export function Home() {
         <TokenSheet initial={tokenAsset} start={tokenMode} onClose={() => setSheet(null)} />
       )}
       {sheet === "swap" && <SwapSheet onClose={() => setSheet(null)} />}
-      {sheet === "stake" && <StakeSheet onClose={() => setSheet(null)} />}
-      {sheet === "pool" && <PoolSheet onClose={() => setSheet(null)} />}
+      {(sheet === "stake" || sheet === "stake-rewards") && (
+        <StakeSheet initialMode={sheet === "stake-rewards" ? "rewards" : "lock"} onClose={closeStake} />
+      )}
+      {(sheet === "pool" || sheet === "rewards") && (
+        <PoolSheet initialMode={sheet === "rewards" ? "rewards" : "deposit"} onClose={closePool} />
+      )}
       {sheet === "phrase" && <Phrase onClose={() => setSheet(null)} />}
       {sheet === "passkey" && <EnablePasskey onClose={() => setSheet(null)} />}
       {sheet === "2fa" && <Enable2fa onClose={() => setSheet(null)} />}
     </div>
+  );
+}
+
+async function writeClipboard(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.readOnly = true;
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    if (!ok) throw new Error("copy failed");
+  }
+}
+
+function CopyAddress({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      className="addr copy"
+      type="button"
+      onClick={() => {
+        void writeClipboard(address).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1400);
+        }).catch(() => setCopied(false));
+      }}
+    >
+      {address}
+      <small>{copied ? "Copied" : "Copy"}</small>
+    </button>
   );
 }
 
@@ -288,6 +353,108 @@ function Holding({
     <button className="holding" type="button" onClick={onClick}>
       <RowBody {...row} />
     </button>
+  );
+}
+
+function StakeCard({
+  owner,
+  reloadKey,
+  onRewards,
+}: {
+  owner: string;
+  reloadKey: number;
+  onRewards: () => void;
+}) {
+  const [positions, setPositions] = useState<StakePosition[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancel = false;
+    setError(null);
+    void readStake(owner).then(
+      (next) => { if (!cancel) setPositions(next); },
+      (err: unknown) => { if (!cancel) setError(messageOf(err)); },
+    );
+    return () => { cancel = true; };
+  }, [owner, reloadKey]);
+
+  const rows = positions ?? [];
+
+  return (
+    <section className="card stake-home">
+      <div className="kicker"><span>Staked HEMI</span></div>
+      {positions == null && !error && <p className="fine">Loading positions…</p>}
+      {error && <p className="fine">{error}</p>}
+      {positions != null && rows.length === 0 && (
+        <p className="fine">No staked HEMI in this wallet yet.</p>
+      )}
+      <div className="lp-list">
+        {rows.map((position) => (
+          <div className="lp-pos" key={position.tokenId}>
+            <b>{formatUnits(position.amount, 18)} HEMI</b>
+            <small>
+              {position.weight == null ? "Weight unavailable" : `${formatUnits(position.weight, 18)} veHEMI`}
+              {" · "}
+              {position.expired ? "Unlocked" : position.end <= 0 ? "Unlocks —" : `Unlocks ${formatWhen(position.end * 1000)}`}
+            </small>
+            <span>{stakeRewardLine(position)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="actions">
+        <button className="ghost" type="button" onClick={onRewards}>Rewards</button>
+      </div>
+    </section>
+  );
+}
+
+function LiquidityCard({
+  owner,
+  reloadKey,
+  onRewards,
+}: {
+  owner: string;
+  reloadKey: number;
+  onRewards: () => void;
+}) {
+  const [snapshot, setSnapshot] = useState<LpRewardSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancel = false;
+    setError(null);
+    void loadLpRewards(owner).then(
+      (next) => { if (!cancel) setSnapshot(next); },
+      (err: unknown) => { if (!cancel) setError(messageOf(err)); },
+    );
+    return () => { cancel = true; };
+  }, [owner, reloadKey]);
+
+  const positions = snapshot?.positions ?? [];
+
+  return (
+    <section className="card liquidity">
+      <div className="kicker"><span>Liquidity</span></div>
+      {snapshot == null && !error && <p className="fine">Loading positions…</p>}
+      {error && <p className="fine">{error}</p>}
+      {snapshot != null && positions.length === 0 && (
+        <p className="fine">No liquidity positions in this wallet yet.</p>
+      )}
+      {snapshot?.truncated && <p className="fine">Showing the first 30 positions on each venue.</p>}
+      <div className="lp-list">
+        {positions.map((position) => (
+          <div className="lp-pos" key={`${position.venue}-${position.tokenId}`}>
+            <b>{position.pairLabel}{position.feeLabel ? ` · ${position.feeLabel}` : ""}</b>
+            <small>{position.venueLabel} · {position.inRange ? "In range" : "Out of range"}</small>
+            <small>{position.lowerPrice} – {position.upperPrice} {position.priceUnit}</small>
+            <span>{positionFeeLine(position)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="actions">
+        <button className="ghost" type="button" onClick={onRewards}>Rewards</button>
+      </div>
+    </section>
   );
 }
 

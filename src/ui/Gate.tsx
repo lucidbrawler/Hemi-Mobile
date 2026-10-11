@@ -57,7 +57,7 @@ export function Gate() {
 
   return (
     <div>
-      <Brand subtitle="BTC, hemiBTC, ETH, HEMI, and VUSD" />
+      <Brand />
       <p className="sub" style={{ marginTop: 0 }}>
         One phrase holds Bitcoin and a Hemi address. That address receives tunneled BTC and ETH. Saved wallets stay on this device.
       </p>

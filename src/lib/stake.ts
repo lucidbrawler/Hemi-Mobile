@@ -1,4 +1,5 @@
 import { Contract, Wallet, getAddress } from "ethers";
+import { formatUnits } from "./format";
 import { HEMIBTC, HEMI_TOKEN, VE_HEMI, VE_HEMI_LENS, VE_HEMI_REWARDS, VUSD } from "../chain";
 import { hemiProvider } from "./hemi";
 
@@ -72,6 +73,12 @@ type RewardRow = {
   decimals: number | bigint;
   claimable: bigint;
 };
+
+export function stakeRewardLine(position: StakePosition): string {
+  if (position.rewards == null) return "Could not read";
+  if (position.rewards.length === 0) return "None yet";
+  return position.rewards.map((reward) => `${formatUnits(reward.amount, reward.decimals)} ${reward.symbol}`).join(" · ");
+}
 
 export function stakeWeightLabel(seconds: number): string {
   const pct = (seconds / STAKE_MAX_SECONDS) * 100;
