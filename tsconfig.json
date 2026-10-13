@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "scripts/selfcheck.ts", "vite.config.ts", "capacitor.config.ts"]
+  "include": ["src", "scripts/selfcheck.ts", "scripts/reviewcheck.ts", "vite.config.ts", "capacitor.config.ts"]
 }

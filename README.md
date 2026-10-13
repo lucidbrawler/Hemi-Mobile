@@ -7,7 +7,7 @@ This is not a Hemi Labs product. The Hemi name and hemiBTC ticker are used so th
 ## What it does
 
 - Creates or imports a 12-word phrase. Bitcoin uses BIP84 (`m/84'/0'/0'/0/0`). Hemi uses the standard EVM path (`m/44'/60'/0'/0/0`) on chain id `43111`.
-- Saves the phrase on this device behind a passkey (WebAuthn). A password is optional 2FA: when it is on, unlock asks for the password and then the passkey. The app does not upload keys. Older wallets saved with a password alone still open, and can add a passkey from the wallet tab.
+- Saves the phrase on this device. The app does not upload keys. See **Seed lock** below.
 - Creates two wallets from the phrase: a native Bitcoin address, and a Hemi wallet (`m/44'/60'/0'/0/0`). The same Ethereum key is the address on Ethereum mainnet and on Hemi. Tunneled BTC is minted to that Hemi address as the hemiBTC ERC-20. The balance is `balanceOf` on `0xAA40c0c7644e0b2B224509571e10ad20d9C4ef28`. ETH on Hemi pays gas. ETH on Ethereum is what the ETH tunnel deposits.
 - Sends native BTC, or hemiBTC when the Hemi address has a little ETH for gas.
 - Embeds the native Bitcoin tunnel:
@@ -21,6 +21,26 @@ This is not a Hemi Labs product. The Hemi name and hemiBTC ticker are used so th
 - The official portal (`https://app.hemi.xyz/tunnel/`) sends `X-Frame-Options: SAMEORIGIN`, so it cannot be placed in an iframe. The tunnel screen talks to the same vault and the same standard bridge instead.
 
 Mainnet coins move if you confirm a send or a tunnel. A new wallet starts at zero.
+
+## Seed lock
+
+The browser and the phone do not store the phrase the same way.
+
+**Browser.** A passkey uses WebAuthn. When the browser returns a PRF secret, the AES key is derived from that secret and is not stored. Otherwise the passkey prompt is the user check and a non-extractable AES key stays in IndexedDB for that site. A password is optional 2FA (at least 8 characters). The locked blob is in `localStorage`. Older wallets saved with a password alone still open, and can add a passkey from the wallet tab.
+
+**Phone.** The locked blob is in Android encrypted preferences, under a keystore master key. The first launch copies any wallet out of WebView storage and deletes that copy. Android backup is off. A new password has to meet the same bar as the Warthog wallet: 4 of 8 characters, lowercase, uppercase, a number, and a symbol. An older shorter password still unlocks.
+
+The phone passkey is an Android Keystore AES key. It never enters JavaScript. The system asks for a fingerprint or face every time the phrase is read. A device PIN is not accepted. Enrolling another fingerprint does not delete the key. A passkey saved on an older build still opens with a fingerprint or face, and that unlock wraps the phrase under a new key. The first unlock after this update can ask twice.
+
+While the wallet is open, the phrase and the private keys stay in a module (`src/lib/sessionVault.ts`). The screens only receive the two addresses. The wallet locks when the app goes to the background, and after 5 minutes with no taps. The phone window uses `FLAG_SECURE`, so screenshots and the app-switcher preview are blocked there. The browser cannot make that same guarantee.
+
+There is no auto-upload and no cloud restore. The written phrase is the backup. A password, when one is set, is the other way back in if the passkey key is gone.
+
+## Review build
+
+This is an unofficial demo, not a Hemi Labs product. The Android id stays `app.demo.hemibtcwallet` so an install that already has a wallet keeps it. The APK in this repo is signed with the Android debug key and is for sideloading, not the Play Store. A store build would need its own release key. That key is not in this tree.
+
+`npm run selfcheck` checks derivation, the tunnel memo, the withdrawal hashes, the password bar, the phone vault copy plan, a password round trip, pool math, and stake weight. It does not broadcast a transaction.
 
 ## Run it in the browser
 
@@ -36,7 +56,7 @@ Open http://localhost:5173 . Create a wallet, then use Wallet, Tunnel, and Activ
 npm run selfcheck
 ```
 
-Checks the well-known “abandon …” phrase against the expected Bitcoin and Ethereum addresses, and checks that a tunnel memo is a 40-byte ASCII OP_RETURN.
+Checks the well-known “abandon …” phrase, the tunnel memo, the withdrawal hashes, and the review checks in `scripts/reviewcheck.ts`.
 
 ## Demo APK
 

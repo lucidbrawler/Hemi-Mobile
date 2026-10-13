@@ -11,10 +11,12 @@ import { celebrate, pokeBuddy } from "../lib/fx";
 import {
   loadLpRewards,
   positionFeeLine,
+  positionUsdLine,
   type LpPosition,
   type LpRewardSnapshot,
 } from "../lib/lpRewards";
 import { loadMerklIncentive, type MerklIncentive } from "../lib/merkl";
+import { MerklOnPosition, useMerklRewards } from "./MerklPosition";
 import { loadPoolPriceSeries } from "../lib/poolChart";
 import { estimateFeeApr, loadFeeAprInputs, type FeeAprEstimate, type FeeAprInputs } from "../lib/poolApr";
 import {
@@ -536,7 +538,14 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
   }, [owner, reloadKey]);
 
   const positions = snapshot?.positions ?? [];
+  const merkl = useMerklRewards(owner, reloadKey);
   const owed = positions.filter((position) => position.feesKnown && (position.fee0 > 0n || position.fee1 > 0n));
+  const poolCounts = new Map<string, number>();
+  for (const position of positions) {
+    const pool = poolById(position.poolId)?.pool.toLowerCase();
+    if (!pool) continue;
+    poolCounts.set(pool, (poolCounts.get(pool) ?? 0) + 1);
+  }
   const canClaimFees = owed.length > 0 && sure && !noGas && !busy;
 
   async function claimFees(rows: LpPosition[]) {
@@ -576,7 +585,7 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
   return (
     <div>
       <p className="fine">
-        Trading fees accrue on each position. A claim sends whatever the position has earned to this wallet.
+        Trading fees accrue on each position. A claim sends those fees to this wallet. Merkl incentives show on the position, and a Merkl claim is separate.
       </p>
       {snapshot == null && !error && <p className="empty">Loading positions…</p>}
       {snapshot != null && positions.length === 0 && (
@@ -589,12 +598,18 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
         </label>
       )}
       {snapshot?.truncated && <p className="fine">Showing the first 30 positions on each venue.</p>}
+      {merkl.data && !merkl.data.rewardsReady && positions.length > 0 && (
+        <p className="fine">Merkl rewards did not load.</p>
+      )}
       <div className="list">
         {positions.map((position) => {
           const fees = feeLine(position);
+          const feeUsd = positionUsdLine(position, w.prices, "fees");
           const hasFees = position.feesKnown && (position.fee0 > 0n || position.fee1 > 0n);
+          const pool = poolById(position.poolId)?.pool ?? null;
+          const id = `${position.venue}-${position.tokenId}`;
           return (
-            <div className="card stake-pos" key={`${position.venue}-${position.tokenId}`}>
+            <div className="card stake-pos" key={id}>
               <div className="rowline">
                 <span>{position.venueLabel}</span>
                 <b>{position.pairLabel}{position.feeLabel ? ` · ${position.feeLabel}` : ""}</b>
@@ -611,6 +626,12 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
                 <span>Fees</span>
                 <b>{fees}</b>
               </div>
+              {feeUsd && (
+                <div className="rowline">
+                  <span>Value</span>
+                  <b>{feeUsd}</b>
+                </div>
+              )}
               {hasFees && (
                 <div className="actions">
                   <button
@@ -623,6 +644,14 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
                   </button>
                 </div>
               )}
+              <MerklOnPosition
+                id={id}
+                pool={pool}
+                inRange={position.inRange}
+                shared={(poolCounts.get(pool?.toLowerCase() ?? "") ?? 0) > 1}
+                merkl={merkl}
+                noGas={noGas}
+              />
             </div>
           );
         })}

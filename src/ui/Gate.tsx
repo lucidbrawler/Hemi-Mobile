@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import { nativeShell } from "../lib/devicePasskey";
 import { messageOf } from "../lib/errors";
 import { shortAddr } from "../lib/format";
+import { NATIVE_PASSWORD_ERROR, passwordMeetsBar } from "../lib/password";
 import { createMnemonic, deriveWallet } from "../lib/wallet";
 import type { SavedWallet } from "../lib/storage";
 import { useWallet } from "../state";
 import { Brand } from "./mark";
+import { PasswordRules } from "./PasswordRules";
 
 type Mode = "list" | "unlock" | "create" | "import";
 
@@ -52,7 +55,9 @@ export function Gate() {
   }
 
   const passkey = wallet.passkeyReady;
+  const native = nativeShell();
   const needPassword = !passkey || twoFactor;
+  const passwordReady = native ? passwordMeetsBar(password) : password.length >= 8;
   const chosen = wallet.wallets.find((row) => row.name === selected) ?? null;
 
   return (
@@ -125,7 +130,7 @@ export function Gate() {
             event.preventDefault();
             void run(async () => {
               if (!wrote) throw new Error("Confirm that you wrote the phrase down.");
-              assertPassword(needPassword, password, again);
+              assertPassword(needPassword, password, again, native);
               await wallet.saveWallet(name, draft || createMnemonic(), {
                 twoFactor: passkey && twoFactor,
                 password: needPassword ? password : undefined,
@@ -153,12 +158,13 @@ export function Gate() {
             setPassword={setPassword}
             again={again}
             setAgain={setAgain}
+            strict={native}
           />
           <label className="check">
             <input type="checkbox" checked={wrote} onChange={(e) => setWrote(e.target.checked)} />
             <span>I wrote the 12 words down. They stay on this device and cannot be recovered if I lose them.</span>
           </label>
-          <button className="btn primary wide" disabled={busy || !draft || !wrote || !name.trim() || (needPassword && password.length < 8)} type="submit">
+          <button className="btn primary wide" disabled={busy || !draft || !wrote || !name.trim() || (needPassword && !passwordReady)} type="submit">
             {saveLabel(busy, passkey, twoFactor)}
           </button>
         </form>
@@ -169,7 +175,7 @@ export function Gate() {
           onSubmit={(event) => {
             event.preventDefault();
             void run(async () => {
-              assertPassword(needPassword, password, again);
+              assertPassword(needPassword, password, again, native);
               await wallet.saveWallet(name, phrase, {
                 twoFactor: passkey && twoFactor,
                 password: needPassword ? password : undefined,
@@ -193,8 +199,9 @@ export function Gate() {
             setPassword={setPassword}
             again={again}
             setAgain={setAgain}
+            strict={native}
           />
-          <button className="btn primary wide" disabled={busy || !name.trim() || phrase.trim().split(/\s+/).length < 12 || (needPassword && password.length < 8)} type="submit">
+          <button className="btn primary wide" disabled={busy || !name.trim() || phrase.trim().split(/\s+/).length < 12 || (needPassword && !passwordReady)} type="submit">
             {saveLabel(busy, passkey, twoFactor)}
           </button>
         </form>
@@ -340,9 +347,13 @@ function saveLabel(busy: boolean, passkey: boolean, twoFactor: boolean): string 
   return twoFactor ? "Save with passkey + password" : "Save with passkey";
 }
 
-function assertPassword(needed: boolean, password: string, again: string) {
+function assertPassword(needed: boolean, password: string, again: string, native: boolean) {
   if (!needed) return;
-  if (password.length < 8) throw new Error("Password must be at least 8 characters.");
+  if (native) {
+    if (!passwordMeetsBar(password)) throw new Error(NATIVE_PASSWORD_ERROR);
+  } else if (password.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
   if (password !== again) throw new Error("Passwords do not match.");
 }
 
@@ -352,12 +363,14 @@ function PasswordFields({
   again,
   setAgain,
   confirm,
+  strict = false,
 }: {
   password: string;
   setPassword: (value: string) => void;
   again: string;
   setAgain: (value: string) => void;
   confirm: boolean;
+  strict?: boolean;
 }) {
   return (
     <>
@@ -371,6 +384,7 @@ function PasswordFields({
           <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />
         </label>
       )}
+      {strict && confirm && <PasswordRules password={password} />}
     </>
   );
 }
@@ -385,6 +399,7 @@ function SaveAuth({
   setPassword,
   again,
   setAgain,
+  strict,
 }: {
   passkey: boolean;
   native: boolean;
@@ -395,6 +410,7 @@ function SaveAuth({
   setPassword: (value: string) => void;
   again: string;
   setAgain: (value: string) => void;
+  strict: boolean;
 }) {
   if (!passkey) {
     return (
@@ -403,7 +419,7 @@ function SaveAuth({
           {passkeyNote ||
             "Passkey is not available here. A password can save the wallet on this device."}
         </p>
-        <PasswordFields password={password} setPassword={setPassword} again={again} setAgain={setAgain} confirm />
+        <PasswordFields password={password} setPassword={setPassword} again={again} setAgain={setAgain} confirm strict={strict} />
       </>
     );
   }
@@ -411,14 +427,14 @@ function SaveAuth({
     <>
       <p className="hint">
         {native
-          ? "Passkey is this phone’s fingerprint, face, or PIN. The phrase stays encrypted on the phone. Turn on a password only if you want both factors at every login."
+          ? "Passkey is this phone’s fingerprint or face. Android keeps the key in the keystore and asks before the phrase can be read. Adding a fingerprint later does not erase it. Turn on a password only if you want both factors at every login."
           : "Passkey is how you unlock. The browser asks once to create it. Turn on a password only if you want both factors at every login."}
       </p>
       <label className="check">
         <input type="checkbox" checked={twoFactor} onChange={(e) => setTwoFactor(e.target.checked)} />
         <span>Also require a password (2FA)</span>
       </label>
-      {twoFactor && <PasswordFields password={password} setPassword={setPassword} again={again} setAgain={setAgain} confirm />}
+      {twoFactor && <PasswordFields password={password} setPassword={setPassword} again={again} setAgain={setAgain} confirm strict={strict} />}
     </>
   );
 }

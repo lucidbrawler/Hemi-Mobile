@@ -26,10 +26,14 @@ export function btcToSats(input: string): bigint | null {
 
 export function formatUsd(amount: number): string {
   if (!Number.isFinite(amount)) return "—";
+  const abs = Math.abs(amount);
+  if (abs > 0 && abs < 0.0001) return amount < 0 ? ">-$0.0001" : "<$0.0001";
+  const digits = abs >= 1000 ? 0 : abs < 0.01 ? 4 : 2;
   return amount.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: amount >= 1000 ? 0 : 2,
+    minimumFractionDigits: digits === 4 ? 2 : digits,
+    maximumFractionDigits: digits,
   });
 }
 
@@ -61,4 +65,17 @@ export function formatRemain(targetMs: number, now = Date.now()): string {
   }
   const days = Math.round(hours / 24);
   return days === 1 ? "About 1 day" : `About ${days} days`;
+}
+
+/** Coarse countdown for a veHEMI unlock. Short waits use the same words as formatRemain. */
+export function formatLockRemain(endSec: number, now = Date.now()): string {
+  const left = endSec * 1000 - now;
+  if (left <= 0) return "Unlocked";
+  if (left < 48 * 60 * 60 * 1000) return formatRemain(endSec * 1000, now);
+  const days = Math.round(left / 86_400_000);
+  if (days < 60) return days === 1 ? "About 1 day" : `About ${days} days`;
+  const months = Math.round(days / 30.44);
+  if (months < 24) return months === 1 ? "About 1 month" : `About ${months} months`;
+  const years = Math.max(1, Math.round(months / 12));
+  return years === 1 ? "About 1 year" : `About ${years} years`;
 }

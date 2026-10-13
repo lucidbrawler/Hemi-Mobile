@@ -117,6 +117,35 @@ export function requireEthAddress(value: string): string {
   return getAddress(text);
 }
 
+/** Ethereum network fee for a native send. A full-balance estimate falls back to 21000 gas. */
+export async function quoteEthereumFee(from: string, to: string, value: bigint): Promise<bigint | null> {
+  if (!isAddress(from) || !isAddress(to) || value <= 0n) return null;
+  const provider = ethProvider();
+  try {
+    let gas = 21_000n;
+    try {
+      gas = await provider.estimateGas({ from, to, value });
+    } catch {
+      gas = 21_000n;
+    }
+    const fee = await provider.getFeeData();
+    const price = fee.maxFeePerGas ?? fee.gasPrice;
+    if (price == null) return null;
+    return gas * price;
+  } catch {
+    return null;
+  }
+}
+
+/** True once Ethereum has a receipt, including a failed transaction. */
+export async function readEthereumSettled(hash: string): Promise<boolean> {
+  try {
+    return (await ethProvider().getTransactionReceipt(hash)) != null;
+  } catch {
+    return false;
+  }
+}
+
 /** Send native ETH on Ethereum. The network fee is extra and stays in this wallet. */
 export async function sendEthereum(privateKey: string, to: string, amount: bigint): Promise<string> {
   if (amount <= 0n) throw new Error("Enter an amount of ETH.");

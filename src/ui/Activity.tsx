@@ -7,9 +7,12 @@ import vusdIcon from "../assets/vusd.svg";
 import usdtIcon from "../assets/usdt.svg";
 import vetroIcon from "../assets/vetro.svg";
 import wbtcIcon from "../assets/wbtc.svg";
+import { ETH_EXPLORER } from "../chain";
+import { readEthereumSettled } from "../lib/ethBridge";
 import { formatUnits, formatWhen } from "../lib/format";
 import { messageOf } from "../lib/errors";
-import { readBtcActivity, readHemiActivity, type ChainLeg, type ChainRow } from "../lib/hemi";
+import { readBtcActivity, readHemiActivity, readHemiSettled, type ChainLeg, type ChainRow } from "../lib/hemi";
+import { readPending, writePending, type PendingActivity } from "../lib/pending";
 import { useWallet } from "../state";
 import { EthMoves } from "./EthTunnel";
 import { BtcMoves } from "./Tunnel";
@@ -63,10 +66,30 @@ function Amounts({ legs }: { legs: ChainLeg[] }) {
   );
 }
 
+function ownsPending(row: PendingActivity, btcAddress: string, hemiAddress: string): boolean {
+  if (row.owner === btcAddress) return true;
+  return row.owner.toLowerCase() === hemiAddress.toLowerCase();
+}
+
+function rowIcon(row: ChainRow): string {
+  const spent = row.legs.find((leg) => {
+    try {
+      return BigInt(leg.amount) < 0n;
+    } catch {
+      return false;
+    }
+  })?.symbol;
+  if (spent) return spent;
+  if (row.legs[0]?.symbol) return row.legs[0].symbol;
+  if (/hemi|lock|claim|reward/i.test(row.title)) return "HEMI";
+  return "ETH";
+}
+
 export function Activity() {
   const w = useWallet();
   const wallet = w.wallet!;
   const [rows, setRows] = useState<ChainRow[]>([]);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,14 +105,47 @@ export function Activity() {
           (err: unknown) => ({ rows: [] as ChainRow[], error: messageOf(err) }),
         ),
       ]);
+      const indexed = [...btc.rows, ...hemi.rows];
+      const indexedIds = new Set(indexed.map((row) => row.id.toLowerCase()));
+      const mine = readPending().filter((row) => ownsPending(row, wallet.btcAddress, wallet.hemiAddress));
+      const drop = new Set<string>();
+      const waiting: ChainRow[] = [];
+      await Promise.all(mine.map(async (row) => {
+        const hash = row.hash.toLowerCase();
+        if (indexedIds.has(hash)) {
+          drop.add(hash);
+          return;
+        }
+        if (row.clear === "mined") {
+          const seen = row.href.startsWith(ETH_EXPLORER)
+            ? await readEthereumSettled(row.hash)
+            : await readHemiSettled(row.hash);
+          if (seen) {
+            drop.add(hash);
+            return;
+          }
+        }
+        waiting.push({
+          id: row.hash,
+          when: row.when,
+          title: row.title,
+          detail: row.detail,
+          href: row.href,
+          legs: row.legs,
+        });
+      }));
+      if (drop.size > 0) {
+        writePending(readPending().filter((row) => !drop.has(row.hash.toLowerCase())));
+      }
       if (!live) return;
-      setRows([...btc.rows, ...hemi.rows].sort((a, b) => b.when - a.when));
+      setRows([...waiting, ...indexed].sort((a, b) => b.when - a.when));
+      setPendingIds(new Set(waiting.map((row) => row.id.toLowerCase())));
       setError(btc.error && hemi.error ? `${btc.error} ${hemi.error}` : btc.error ?? hemi.error);
     })();
     return () => {
       live = false;
     };
-  }, [wallet.btcAddress, wallet.hemiAddress, w.tunnels]);
+  }, [wallet.btcAddress, wallet.hemiAddress, w.tunnels, w.notice]);
 
   return (
     <div>
@@ -103,12 +159,10 @@ export function Activity() {
       {rows.length === 0 && !error && <p className="empty">No Bitcoin or Hemi transfers for these addresses yet.</p>}
       <div className="list">
         {rows.map((row) => {
-          const icon = row.title === "Swap" || row.title === "Add liquidity"
-            ? row.legs.find((leg) => BigInt(leg.amount) < 0n)?.symbol ?? row.legs[0]?.symbol
-            : row.legs[0]?.symbol;
+          const pending = pendingIds.has(row.id.toLowerCase());
           return (
-            <a className="card chain" key={row.href} href={row.href} target="_blank" rel="noreferrer">
-              <Coin symbol={icon ?? "BTC"} />
+            <a className={pending ? "card chain pending" : "card chain"} key={`${pending ? "pending" : "chain"}-${row.id}`} href={row.href} target="_blank" rel="noreferrer">
+              <Coin symbol={rowIcon(row)} />
               <span>
                 <b>{row.title}</b>
                 <small>{formatWhen(row.when)} · {row.detail}</small>

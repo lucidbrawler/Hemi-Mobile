@@ -23,7 +23,7 @@ export function App() {
   if (!w.ready) {
     return (
       <Stage bare>
-        <p className="fine">Opening wallet…</p>
+        <p className="fine">{w.error ?? "Opening wallet…"}</p>
       </Stage>
     );
   }

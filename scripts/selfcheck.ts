@@ -1,10 +1,12 @@
 import { hex } from "@scure/base";
 import { ZeroHash } from "ethers";
+import { passwordMeetsBar } from "../src/lib/password.ts";
 import { assertMnemonic, deriveWallet } from "../src/lib/wallet.ts";
 import { buildSignedTx, memoScriptHex, tunnelMemo } from "../src/lib/btc.ts";
 import { hashOutputRootProof, hashWithdrawal, withdrawalStorageKey } from "../src/lib/ethBridge.ts";
 import { btcToSats, satsToBtc } from "../src/lib/format.ts";
 import { isPopPublication } from "../src/lib/pop.ts";
+import { merklClaimable, merklPayoutCoversMore, merklPayoutLine, readMerklWallet } from "../src/lib/merklParse.ts";
 
 const phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 assertMnemonic(phrase);
@@ -19,6 +21,9 @@ if (wallet.btcAddress !== expectedBtc) {
 if (wallet.hemiAddress !== expectedHemi) {
   throw new Error(`Hemi address ${wallet.hemiAddress} !== ${expectedHemi}`);
 }
+if (!passwordMeetsBar("Abcdefg1")) throw new Error("8 characters with upper, lower, and a digit should pass");
+if (passwordMeetsBar("Abcdefgh")) throw new Error("a password missing a number and a symbol should fail");
+if (passwordMeetsBar("abcdefgh")) throw new Error("a lowercase password should fail");
 
 const memo = tunnelMemo(expectedHemi);
 if (memo.length !== 40) throw new Error(`memo length ${memo.length}`);
@@ -80,6 +85,89 @@ const synthetic = hashWithdrawal({
 if (synthetic !== "0xd962f497c020341649c558310c90fd4858ff96f37c1d0b43f709acde38dd96dd") {
   throw new Error(`withdrawal hash ${synthetic}`);
 }
+
+const pool = "0x7e8b925b43dbb364def5e44e93e9f8fbc02cfc21";
+const usdc = "0xad11a8BEb98bbf61dbb1aa0F6d6F2ECD87b35afA";
+const proof = `0x${"ab".repeat(32)}`;
+const merkl = readMerklWallet(
+  [{
+    status: "LIVE",
+    apr: 171.05,
+    earliestCampaignEnd: 1_790_000_000,
+    explorerAddress: pool,
+    rewardsRecord: { breakdowns: [{ token: { symbol: "USDC.e" } }] },
+  }, {
+    status: "LIVE",
+    apr: 10,
+    identifier: "not-a-pool",
+  }],
+  {
+    opportunities: [
+      {
+        opportunity: { explorerAddress: pool, status: "LIVE", apr: 171.05 },
+        tokens: [{
+          token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+          claimable: "5000000",
+          pending: "1000",
+        }],
+      },
+      {
+        opportunity: { explorerAddress: "0x6153ef0abfe8fa881a2492743dfc34ec594868d1", status: "PAST" },
+        tokens: [{
+          token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+          claimable: "3000000",
+          pending: "0",
+        }],
+      },
+    ],
+  },
+  [{
+    rewards: [{
+      token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+      amount: "10000000",
+      claimed: "2000000",
+      pending: "1000",
+      proofs: [proof],
+    }],
+  }],
+);
+const hemiVetro = merkl.byPool.get(pool);
+if (!hemiVetro || hemiVetro.apr !== 171.05) throw new Error("merkl apr missing");
+if (hemiVetro.tokens[0]?.claimable !== 5_000_000n) throw new Error("merkl pool slice");
+if (hemiVetro.tokens[0]?.pending !== 1000n) throw new Error("merkl pending");
+if (merkl.byPool.has("not-a-pool")) throw new Error("merkl kept a non-address");
+const other = merkl.byPool.get("0x6153ef0abfe8fa881a2492743dfc34ec594868d1");
+if (!other || other.apr != null) throw new Error("ended campaign should keep the amount without an APR");
+if (!merkl.rewardsReady) throw new Error("merkl feeds were ready");
+const paying = merklClaimable(hemiVetro, merkl.claims);
+if (paying.length !== 1 || paying[0]?.amount !== 10_000_000n) throw new Error("claim passes the cumulative amount");
+if (merklPayoutLine(hemiVetro, merkl.claims) !== "8 USDC.e") throw new Error("payout is the whole token");
+if (!merklPayoutCoversMore(hemiVetro, merkl.claims)) throw new Error("payout should include the other pool");
+
+const settled = readMerklWallet(null, {
+  opportunities: [{
+    opportunity: { explorerAddress: pool },
+    tokens: [{
+      token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+      claimable: "5000000",
+      pending: "0",
+    }],
+  }],
+}, [{
+  rewards: [{
+    token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+    amount: "5000000",
+    claimed: "5000000",
+    pending: "0",
+    proofs: [],
+  }],
+}]);
+const afterClaim = settled.byPool.get(pool);
+if (afterClaim) throw new Error("a fully claimed pool with no campaign should drop off the card");
+if (settled.claims[0]?.proofs?.length !== 0) throw new Error("an empty proof list is valid");
+
+const broken = readMerklWallet(null, null, null);
+if (broken.rewardsReady || broken.byPool.size !== 0) throw new Error("missing merkl feeds");
 
 console.log("selfcheck ok");
 console.log(wallet.btcAddress);

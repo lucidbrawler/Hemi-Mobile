@@ -2,6 +2,7 @@ import { Contract, Wallet, getAddress } from "ethers";
 import { formatUnits } from "./format";
 import { HEMIBTC, HEMI_TOKEN, VE_HEMI, VE_HEMI_LENS, VE_HEMI_REWARDS, VUSD } from "../chain";
 import { hemiProvider } from "./hemi";
+import { holdingUsd, legsUsd, type PriceBook } from "./prices";
 
 /** VeHemi YEAR / 60. Locks round down onto this grid. */
 export const STAKE_EPOCH_SECONDS = 525_960;
@@ -29,10 +30,21 @@ const allowanceAbi = [
 const veAbi = [
   "function balanceOf(address owner) view returns (uint256)",
   "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
+  "function ownerOf(uint256 tokenId) view returns (address)",
   "function getLockedBalance(uint256 tokenId) view returns (tuple(int128 amount, uint64 end))",
   "function balanceOfNFT(uint256 tokenId) view returns (uint256)",
   "function createLock(uint256 amount, uint256 lockDuration) returns (uint256)",
+  "function increaseAmount(uint256 tokenId, uint256 amount)",
+  "function increaseUnlockTime(uint256 tokenId, uint256 lockDuration)",
   "function withdraw(uint256 tokenId)",
+  "error AmountIsZero()",
+  "error AmountTooSmall()",
+  "error LockDurationTooLong()",
+  "error LockExpired()",
+  "error LockNotExpired()",
+  "error NewLockDurationNotGreater()",
+  "error NoExistingLock()",
+  "error NotOwner()",
 ];
 
 const rewardsAbi = [
@@ -51,6 +63,7 @@ const lensAbi = [
 ];
 
 export type StakeReward = {
+  token: string;
   symbol: string;
   decimals: number;
   amount: bigint;
@@ -80,6 +93,37 @@ export function stakeRewardLine(position: StakePosition): string {
   return position.rewards.map((reward) => `${formatUnits(reward.amount, reward.decimals)} ${reward.symbol}`).join(" · ");
 }
 
+export function stakeRewardTokens(positions: readonly StakePosition[] | null): string[] {
+  const seen = new Set<string>();
+  for (const position of positions ?? []) {
+    for (const reward of position.rewards ?? []) seen.add(reward.token);
+  }
+  return [...seen];
+}
+
+/** Dollar value of the locked HEMI. */
+export function stakeLockedUsd(position: StakePosition, book: PriceBook | null): string | null {
+  return holdingUsd(book, position.amount, 18, HEMI_TOKEN);
+}
+
+/** Dollar value of epoch rewards. Each token is priced, then totaled. */
+export function stakeRewardsUsd(rewards: StakeReward[] | null, book: PriceBook | null): string | null {
+  if (rewards == null) return null;
+  return legsUsd(book, rewards.map((reward) => ({
+    amount: reward.amount,
+    decimals: reward.decimals,
+    address: reward.token,
+    label: reward.symbol,
+  })));
+}
+
+/** Voting weight veHEMI stores: amount / max-lock, then times the seconds still left. */
+export function stakeWeight(amount: bigint, endSec: number, nowSec: number): bigint {
+  if (amount <= 0n || endSec <= nowSec) return 0n;
+  const slope = amount / BigInt(Math.round(STAKE_MAX_SECONDS));
+  return slope * BigInt(endSec - nowSec);
+}
+
 export function stakeWeightLabel(seconds: number): string {
   const pct = (seconds / STAKE_MAX_SECONDS) * 100;
   const text = Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
@@ -89,6 +133,50 @@ export function stakeWeightLabel(seconds: number): string {
 /** Unlock timestamp after VeHemi rounds the duration down to the epoch grid. */
 export function stakeUnlockAt(nowSec: number, durationSec: number): number {
   return Math.floor((nowSec + durationSec) / STAKE_EPOCH_SECONDS) * STAKE_EPOCH_SECONDS;
+}
+
+/** Latest unlock `increaseUnlockTime` can store from this moment. */
+export function stakeMaxUnlock(nowSec: number): number {
+  return stakeUnlockAt(nowSec, STAKE_MAX_SECONDS);
+}
+
+export type StakeExtend = { kind: "extra"; seconds: number } | { kind: "max" };
+
+export type StakeExtension = {
+  id: string;
+  label: string;
+  /** Epoch-aligned unlock this choice would store. */
+  unlockAt: number;
+  extend: StakeExtend;
+};
+
+/**
+ * Extra time that still fits on a live lock.
+ * A preset is listed only when that full period lands after the current unlock
+ * and on or before the 4-year cap. Maximum is listed whenever the unlock can
+ * move at all. An ended lock, or one already at the cap, has no choices.
+ */
+export function stakeExtensions(nowSec: number, currentEnd: number): StakeExtension[] {
+  if (!(currentEnd > nowSec)) return [];
+  const cap = stakeMaxUnlock(nowSec);
+  if (!(currentEnd < cap)) return [];
+  const choices: StakeExtension[] = [];
+  for (const preset of STAKE_PRESETS) {
+    if (preset.id === "4y") continue;
+    const unlockAt = stakeUnlockAt(currentEnd, preset.seconds);
+    if (unlockAt > currentEnd && unlockAt <= cap) {
+      choices.push({
+        id: preset.id,
+        label: `+ ${preset.label}`,
+        unlockAt,
+        extend: { kind: "extra", seconds: preset.seconds },
+      });
+    }
+  }
+  if (!choices.some((choice) => choice.unlockAt === cap)) {
+    choices.push({ id: "max", label: "Maximum", unlockAt: cap, extend: { kind: "max" } });
+  }
+  return choices;
 }
 
 function rewardSymbol(address: string, symbol: string): string {
@@ -104,6 +192,7 @@ function asRewards(rows: RewardRow[]): StakeReward[] {
   return rows
     .filter((row) => row.claimable > 0n)
     .map((row) => ({
+      token: getAddress(row.token),
       symbol: rewardSymbol(row.token, row.symbol),
       decimals: Number(row.decimals),
       amount: row.claimable,
@@ -172,6 +261,26 @@ async function mined(tx: { hash: string; wait: () => Promise<{ status?: number; 
   return receipt?.hash ?? tx.hash;
 }
 
+const EPOCH = BigInt(STAKE_EPOCH_SECONDS);
+const MAX_TIME = BigInt(Math.round(STAKE_MAX_SECONDS));
+
+function floorEpoch(sec: bigint): bigint {
+  return (sec / EPOCH) * EPOCH;
+}
+
+async function chainNow(): Promise<bigint> {
+  const block = await hemiProvider().getBlock("latest");
+  if (block == null) throw new Error("Could not read the Hemi clock.");
+  return BigInt(block.timestamp);
+}
+
+async function readLocked(ve: Contract, tokenId: bigint): Promise<{ amount: bigint; end: bigint }> {
+  const locked = await ve.getLockedBalance(tokenId);
+  const amount = BigInt(locked.amount ?? locked[0]);
+  const end = BigInt(locked.end ?? locked[1]);
+  return { amount: amount < 0n ? -amount : amount, end };
+}
+
 export async function lockHemi(
   privateKey: string,
   amount: bigint,
@@ -191,6 +300,62 @@ export async function lockHemi(
   onPhase?.("lock");
   const ve = new Contract(VE_HEMI, veAbi, wallet);
   return mined(await ve.createLock(amount, durationSec));
+}
+
+/** Add HEMI to a lock that has not ended. The unlock date stays the same. */
+export async function addHemiToLock(
+  privateKey: string,
+  tokenId: bigint,
+  amount: bigint,
+  onPhase?: (phase: "approve" | "add") => void,
+): Promise<string> {
+  if (amount <= 0n) throw new Error("Enter an amount of HEMI.");
+  const wallet = new Wallet(privateKey, hemiProvider());
+  await requireGas(wallet);
+  const ve = new Contract(VE_HEMI, veAbi, wallet);
+  const locked = await readLocked(ve, tokenId);
+  const now = await chainNow();
+  if (locked.amount <= 0n) throw new Error("This lock is empty.");
+  if (locked.end <= now) throw new Error("This lock has ended. Unlock the HEMI instead of adding more.");
+  const token = new Contract(HEMI_TOKEN, allowanceAbi, wallet);
+  const allowed = BigInt(await token.allowance(wallet.address, VE_HEMI));
+  if (allowed < amount) {
+    onPhase?.("approve");
+    await mined(await token.approve(VE_HEMI, amount));
+  }
+  onPhase?.("add");
+  await ve.increaseAmount.staticCall(tokenId, amount);
+  return mined(await ve.increaseAmount(tokenId, amount));
+}
+
+/**
+ * Push a live lock's unlock later.
+ * `extra` adds that many seconds to the current end. `max` uses the longest
+ * unlock the contract still accepts, 4 years from the chain clock.
+ */
+export async function extendHemiLock(
+  privateKey: string,
+  tokenId: bigint,
+  extend: StakeExtend,
+): Promise<string> {
+  const wallet = new Wallet(privateKey, hemiProvider());
+  await requireGas(wallet);
+  const ve = new Contract(VE_HEMI, veAbi, wallet);
+  const owner = String(await ve.ownerOf(tokenId));
+  if (owner.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("This lock is in another wallet.");
+  const locked = await readLocked(ve, tokenId);
+  const now = await chainNow();
+  if (locked.amount <= 0n) throw new Error("This lock is empty.");
+  if (locked.end <= now) throw new Error("This lock has ended. Unlock the HEMI instead of adding time.");
+  const cap = floorEpoch(now + MAX_TIME);
+  const target = extend.kind === "max"
+    ? cap
+    : floorEpoch(locked.end + BigInt(Math.round(extend.seconds)));
+  if (target <= locked.end) throw new Error("That does not add time to this lock.");
+  if (target > cap) throw new Error("That much time would pass the 4 year limit.");
+  const duration = target - now;
+  await ve.increaseUnlockTime.staticCall(tokenId, duration);
+  return mined(await ve.increaseUnlockTime(tokenId, duration));
 }
 
 async function rewardFloor(settled: number): Promise<number> {

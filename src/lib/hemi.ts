@@ -1,4 +1,4 @@
-import { Contract, JsonRpcProvider, Wallet, getAddress, isAddress } from "ethers";
+import { Contract, Interface, JsonRpcProvider, Wallet, getAddress, isAddress } from "ethers";
 import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MERKL_DISTRIBUTOR, MEMPOOL, SUSHI_POSITION_MANAGER, USDT, VAULT_FACTORY, VAULT_INDEX, VETRO_USD, VUSD, WBTC } from "../chain";
 
 const erc20Abi = [
@@ -129,6 +129,45 @@ export async function quoteVaultFee(stateAddress: string, kind: "deposit" | "wit
 export function fallbackVaultFee(amount: bigint, bps: bigint, minFee: bigint): bigint {
   const proportional = (amount * bps) / 10_000n;
   return proportional > minFee ? proportional : minFee;
+}
+
+const transferIface = new Interface([
+  "function transfer(address to, uint256 amount) returns (bool)",
+]);
+
+async function pricedGas(
+  provider: JsonRpcProvider,
+  tx: { from: string; to: string; value?: bigint; data?: string },
+  fallbackGas: bigint | null,
+): Promise<bigint | null> {
+  try {
+    let gas: bigint;
+    try {
+      gas = await provider.estimateGas(tx);
+    } catch {
+      if (fallbackGas == null) return null;
+      gas = fallbackGas;
+    }
+    const fee = await provider.getFeeData();
+    const price = fee.maxFeePerGas ?? fee.gasPrice;
+    if (price == null) return null;
+    return gas * price;
+  } catch {
+    return null;
+  }
+}
+
+/** Hemi network fee for a native ETH send. A full-balance estimate falls back to 21000 gas. */
+export async function quoteHemiNativeFee(from: string, to: string, value: bigint): Promise<bigint | null> {
+  if (!isAddress(from) || !isAddress(to) || value <= 0n) return null;
+  return pricedGas(hemiProvider(), { from, to, value }, 21_000n);
+}
+
+/** Hemi network fee for an ERC-20 transfer. Gas is paid in Hemi ETH. */
+export async function quoteHemiTokenFee(from: string, token: string, to: string, amount: bigint): Promise<bigint | null> {
+  if (!isAddress(from) || !isAddress(token) || !isAddress(to) || amount <= 0n) return null;
+  const data = transferIface.encodeFunctionData("transfer", [to, amount]);
+  return pricedGas(hemiProvider(), { from, to: token, value: 0n, data }, null);
 }
 
 export async function sendEth(privateKey: string, to: string, amount: bigint): Promise<string> {
@@ -523,6 +562,15 @@ export async function readHemiActivity(address: string): Promise<ChainRow[]> {
 export async function readHemiMined(hash: string): Promise<boolean> {
   const receipt = await hemiProvider().getTransactionReceipt(hash);
   return receipt != null && receipt.status === 1;
+}
+
+/** True once Hemi has a receipt, including a failed transaction. */
+export async function readHemiSettled(hash: string): Promise<boolean> {
+  try {
+    return (await hemiProvider().getTransactionReceipt(hash)) != null;
+  } catch {
+    return false;
+  }
 }
 
 export async function readBtcConfirmations(txid: string): Promise<number> {

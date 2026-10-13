@@ -27,15 +27,22 @@ const allowanceAbi = [
 
 const sushiIface = new Interface([
   "function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
+  "function increaseLiquidity((uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) payable returns (uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function refundETH() payable",
   "function multicall(bytes[] data) payable returns (bytes[] results)",
 ]);
 
 const brownfiIface = new Interface([
   "function mint((address token0, address token1, address deployer, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
+  "function increaseLiquidity((uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) payable returns (uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function refundNativeToken() payable",
   "function multicall(bytes[] data) payable returns (bytes[] results)",
 ]);
+
+const ownedPositionAbi = [
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
+];
 
 export type PoolAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc";
 export type PoolVenue = "sushi" | "brownfi";
@@ -115,6 +122,19 @@ export type PoolDeposit = {
   amount1: bigint;
   tickLower: number;
   tickUpper: number;
+};
+
+/** Add tokens to a position NFT this wallet already holds. The range stays put. */
+export type PoolIncrease = PoolDeposit & { tokenId: bigint };
+
+export type WithdrawQuote = {
+  percent: number;
+  liquidity: bigint;
+  liquidityOut: bigint;
+  amount0: bigint;
+  amount1: bigint;
+  min0: bigint;
+  min1: bigint;
 };
 
 export type PoolMarket = {
@@ -274,6 +294,85 @@ export async function executePoolDeposit(
   return receipt?.hash ?? tx.hash;
 }
 
+export async function executePoolIncrease(
+  privateKey: string,
+  from: string,
+  order: PoolIncrease,
+  onPhase?: (phase: "approve" | "deposit") => void,
+): Promise<string> {
+  const pool = poolById(order.poolId);
+  if (!pool) throw new Error("Pick a pool.");
+  if (order.amount <= 0n) throw new Error("Enter an amount to add.");
+
+  const reader = new Contract(getAddress(managerFor(pool.venue)), ownedPositionAbi, hemiProvider());
+  let owner: string;
+  let row: { token0: string; token1: string; fee: bigint; tickLower: bigint; tickUpper: bigint };
+  try {
+    owner = await reader.ownerOf(order.tokenId) as string;
+    row = await reader.positions(order.tokenId);
+  } catch {
+    throw new Error("This position could not be read.");
+  }
+  if (getAddress(owner) !== getAddress(from)) throw new Error("This position is not in this wallet.");
+  const tickLower = Number(row.tickLower);
+  const tickUpper = Number(row.tickUpper);
+  if (tickLower !== order.tickLower || tickUpper !== order.tickUpper) {
+    throw new Error("This position's range does not match the one on screen.");
+  }
+  const found = findPool(pool.venue, row.token0, row.token1, Number(row.fee));
+  if (!found || found.id !== pool.id) throw new Error("This position is in a different pool.");
+
+  const market = await readPoolMarket(pool);
+  const range = { tickLower, tickUpper };
+  assertRange(market.spacing, range);
+  const fresh = quoteOn(pool, market, range, order.driver, order.amount);
+  const freshDriver = order.driver === "token0" ? fresh.amount0 : fresh.amount1;
+  const freshOther = order.driver === "token0" ? fresh.amount1 : fresh.amount0;
+  const shownOther = order.driver === "token0" ? order.amount1 : order.amount0;
+  if (freshDriver !== order.amount || freshOther > shownOther * (10_000n + SLIPPAGE_BPS) / 10_000n) {
+    throw new Error("The pool price moved. Check the new amounts before adding.");
+  }
+
+  const wallet = new Wallet(privateKey, hemiProvider());
+  const manager = getAddress(managerFor(pool.venue));
+  const value = ethValue(pool, fresh.amount0, fresh.amount1);
+  const eth = await hemiProvider().getBalance(from);
+  if (value > 0n) {
+    if (eth < value + ETH_GAS_RESERVE) throw new Error("Leave 0.0003 ETH for gas.");
+  } else if (eth === 0n) {
+    throw new Error("This Hemi address has no ETH for gas.");
+  }
+  for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
+    const token = new Contract(need.token, allowanceAbi, wallet);
+    const balance = await token.balanceOf(from) as bigint;
+    if (balance < need.amount) {
+      throw new Error(`Only ${formatUnits(balance, need.decimals)} ${need.label} is in this wallet.`);
+    }
+  }
+
+  let approving = false;
+  for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
+    const token = new Contract(need.token, allowanceAbi, wallet);
+    const allowed = await token.allowance(from, manager) as bigint;
+    if (allowed < need.amount) {
+      if (!approving) {
+        approving = true;
+        onPhase?.("approve");
+      }
+      const approveTx = await token.approve(manager, need.amount);
+      await approveTx.wait();
+    }
+  }
+
+  onPhase?.("deposit");
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+  const data = encodeIncrease(pool, order.tokenId, fresh, deadline, value > 0n);
+  const tx = await wallet.sendTransaction({ to: manager, data, value });
+  const receipt = await tx.wait();
+  if (receipt && receipt.status === 0) throw new Error("The add failed.");
+  return receipt?.hash ?? tx.hash;
+}
+
 type PoolState = { sqrtPriceX96: bigint; tickLower: number; tickUpper: number };
 
 export async function readPoolMarket(pool: PoolInfo): Promise<PoolMarket> {
@@ -354,6 +453,29 @@ export function amountsForLiquidity(
   return {
     amount0: amount0ForLiquidity(sqrtPriceX96, sqrtUpper, liquidity),
     amount1: amount1ForLiquidity(sqrtLower, sqrtPriceX96, liquidity),
+  };
+}
+
+/** Tokens a share of `liquidity` would return at this price. 100% takes the whole position. */
+export function quoteWithdraw(
+  sqrtPriceX96: bigint,
+  range: TickRange,
+  liquidity: bigint,
+  percent: number,
+): WithdrawQuote {
+  if (!Number.isInteger(percent) || percent < 1 || percent > 100) throw new Error("Pick a share of the position.");
+  if (liquidity <= 0n) throw new Error("This position has no liquidity to withdraw.");
+  const liquidityOut = percent === 100 ? liquidity : (liquidity * BigInt(percent)) / 100n;
+  if (liquidityOut <= 0n) throw new Error("That share is too small to withdraw.");
+  const amounts = amountsForLiquidity(sqrtPriceX96, range, liquidityOut);
+  return {
+    percent,
+    liquidity,
+    liquidityOut,
+    amount0: amounts.amount0,
+    amount1: amounts.amount1,
+    min0: withSlippage(amounts.amount0),
+    min1: withSlippage(amounts.amount1),
   };
 }
 
@@ -537,6 +659,18 @@ function encodeDeposit(pool: PoolInfo, quote: PoolQuote, recipient: string, dead
   ]]);
   if (!refund) return mint;
   return brownfiIface.encodeFunctionData("multicall", [[mint, brownfiIface.encodeFunctionData("refundNativeToken")]]);
+}
+
+function encodeIncrease(pool: PoolInfo, tokenId: bigint, quote: PoolQuote, deadline: bigint, refund: boolean): string {
+  const params = [tokenId, quote.amount0, quote.amount1, quote.min0, quote.min1, deadline];
+  if (pool.venue === "sushi") {
+    const increase = sushiIface.encodeFunctionData("increaseLiquidity", [params]);
+    if (!refund) return increase;
+    return sushiIface.encodeFunctionData("multicall", [[increase, sushiIface.encodeFunctionData("refundETH")]]);
+  }
+  const increase = brownfiIface.encodeFunctionData("increaseLiquidity", [params]);
+  if (!refund) return increase;
+  return brownfiIface.encodeFunctionData("multicall", [[increase, brownfiIface.encodeFunctionData("refundNativeToken")]]);
 }
 
 function spenders(pool: PoolInfo, amount0: bigint, amount1: bigint): { token: string; amount: bigint; label: string; decimals: number }[] {

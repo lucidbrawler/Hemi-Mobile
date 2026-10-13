@@ -2,6 +2,7 @@ package app.demo.hemibtcwallet;
 
 import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyInfo;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import androidx.biometric.BiometricManager;
@@ -19,21 +20,32 @@ import java.security.MessageDigest;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 
 /**
- * Phone passkey: the system fingerprint, face, or PIN prompt, then an
- * Android Keystore key that never leaves this app.
+ * Phone passkey. The AES key stays in the Android Keystore and never enters
+ * JavaScript. Each read asks for a fingerprint or face. A device PIN is not
+ * accepted. Enrolling another fingerprint does not delete the key. A key from
+ * an older build still opens with a fingerprint or face, then the phrase is
+ * wrapped again under a new key when that succeeds.
  */
 @CapacitorPlugin(name = "DevicePasskey")
 public class DevicePasskeyPlugin extends Plugin {
     private static final String STORE = "AndroidKeyStore";
 
+    private interface CipherWork {
+        void run(Cipher cipher) throws Exception;
+    }
+
+    private interface FailWork {
+        void run(String message);
+    }
+
     @PluginMethod
     public void canAuthenticate(PluginCall call) {
-        int result = BiometricManager.from(getContext()).canAuthenticate(authenticators());
         JSObject ret = new JSObject();
-        ret.put("available", result == BiometricManager.BIOMETRIC_SUCCESS);
+        ret.put("available", unlockAvailable());
         call.resolve(ret);
     }
 
@@ -45,21 +57,30 @@ public class DevicePasskeyPlugin extends Plugin {
             call.reject("Missing wallet.");
             return;
         }
-        String alias = aliasFor(name);
-        authenticate(call, "Save " + name.trim(), "Confirm to keep this wallet on this phone", () -> {
-            try {
-                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                cipher.init(Cipher.ENCRYPT_MODE, getOrCreate(alias));
-                byte[] sealed = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
-                JSObject ret = new JSObject();
-                ret.put("alias", alias);
-                ret.put("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP));
-                ret.put("ciphertext", Base64.encodeToString(sealed, Base64.NO_WRAP));
-                call.resolve(ret);
-            } catch (Exception err) {
-                call.reject(err.getMessage() == null ? "Could not save the passkey." : err.getMessage());
-            }
-        });
+        try {
+            String alias = aliasForSave(name);
+            SecretKey key = keyFor(alias);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            runBiometric(
+                call,
+                "Save " + name.trim(),
+                "Confirm with your fingerprint or face",
+                cipher,
+                (unlocked) -> {
+                    byte[] sealed = unlocked.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+                    dropLegacyAlias(aliasFor(name), alias);
+                    JSObject ret = new JSObject();
+                    ret.put("alias", alias);
+                    ret.put("iv", Base64.encodeToString(unlocked.getIV(), Base64.NO_WRAP));
+                    ret.put("ciphertext", Base64.encodeToString(sealed, Base64.NO_WRAP));
+                    call.resolve(ret);
+                },
+                (message) -> call.reject(message)
+            );
+        } catch (Exception err) {
+            call.reject(err.getMessage() == null ? "Could not save the passkey." : err.getMessage());
+        }
     }
 
     @PluginMethod
@@ -71,23 +92,32 @@ public class DevicePasskeyPlugin extends Plugin {
             call.reject("This wallet has no passkey.");
             return;
         }
-        authenticate(call, "Unlock Hemi BTC", "Confirm the passkey on this phone", () -> {
-            try {
-                SecretKey key = existing(alias);
-                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                cipher.init(
-                    Cipher.DECRYPT_MODE,
-                    key,
-                    new GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))
-                );
-                byte[] plain = cipher.doFinal(Base64.decode(ciphertext, Base64.NO_WRAP));
-                JSObject ret = new JSObject();
-                ret.put("plaintext", new String(plain, StandardCharsets.UTF_8));
-                call.resolve(ret);
-            } catch (Exception err) {
-                call.reject("Passkey unlock failed.");
-            }
-        });
+        try {
+            SecretKey key = existing(alias);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                key,
+                new GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP))
+            );
+            byte[] sealed = Base64.decode(ciphertext, Base64.NO_WRAP);
+            boolean authRequired = userAuthRequired(key);
+            runBiometric(
+                call,
+                "Unlock Hemi BTC",
+                "Confirm with your fingerprint or face",
+                authRequired ? cipher : null,
+                (unlocked) -> {
+                    byte[] plain = (authRequired ? unlocked : cipher).doFinal(sealed);
+                    JSObject ret = new JSObject();
+                    if (needsBiometricUpgrade(key)) wrapUnderBiometric(call, ret, plain, alias);
+                    else finish(call, ret, plain);
+                },
+                (message) -> call.reject(message)
+            );
+        } catch (Exception err) {
+            call.reject("Passkey unlock failed.");
+        }
     }
 
     @PluginMethod
@@ -109,23 +139,51 @@ public class DevicePasskeyPlugin extends Plugin {
         call.resolve(ret);
     }
 
-    private void authenticate(PluginCall call, String title, String subtitle, Runnable after) {
+    /**
+     * Fingerprint or face only. When {@code cipher} is set, the prompt unlocks
+     * that keystore operation. A null cipher is the check used before reading a
+     * legacy key that does not require auth.
+     */
+    private void runBiometric(
+        PluginCall call,
+        String title,
+        String subtitle,
+        Cipher cipher,
+        CipherWork work,
+        FailWork onFailure
+    ) {
         if (!(getActivity() instanceof FragmentActivity)) {
-            call.reject("Passkey needs the app screen.");
+            onFailure.run("Passkey needs the app screen.");
             return;
         }
         FragmentActivity activity = (FragmentActivity) getActivity();
         activity.runOnUiThread(() -> {
+            if (activity.getWindow() == null) {
+                onFailure.run("Passkey needs the app screen.");
+                return;
+            }
+            activity.getWindow().getDecorView().post(() -> {
             BiometricPrompt.AuthenticationCallback callback = new BiometricPrompt.AuthenticationCallback() {
                 @Override
                 public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                    after.run();
+                    try {
+                        Cipher unlocked = cipher;
+                        if (
+                            cipher != null
+                            && result.getCryptoObject() != null
+                            && result.getCryptoObject().getCipher() != null
+                        ) {
+                            unlocked = result.getCryptoObject().getCipher();
+                        }
+                        work.run(unlocked);
+                    } catch (Exception err) {
+                        call.reject(err.getMessage() == null ? "Passkey unlock failed." : err.getMessage());
+                    }
                 }
 
                 @Override
                 public void onAuthenticationError(int errorCode, CharSequence errString) {
-                    String message = errString == null ? "Passkey cancelled." : errString.toString();
-                    call.reject(message);
+                    onFailure.run(errString == null ? "Passkey cancelled." : errString.toString());
                 }
             };
             BiometricPrompt prompt = new BiometricPrompt(
@@ -135,39 +193,155 @@ public class DevicePasskeyPlugin extends Plugin {
             );
             BiometricPrompt.PromptInfo.Builder info = new BiometricPrompt.PromptInfo.Builder()
                 .setTitle(title)
-                .setSubtitle(subtitle)
-                .setAllowedAuthenticators(authenticators());
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                info.setNegativeButtonText("Cancel");
+                .setSubtitle(subtitle);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                info.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG);
             }
-            prompt.authenticate(info.build());
+            info.setNegativeButtonText("Cancel");
+            if (cipher != null) prompt.authenticate(info.build(), new BiometricPrompt.CryptoObject(cipher));
+            else prompt.authenticate(info.build());
+            });
         });
     }
 
-    private int authenticators() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return BiometricManager.Authenticators.BIOMETRIC_STRONG
-                | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
-        }
-        return BiometricManager.Authenticators.BIOMETRIC_WEAK;
+    private boolean unlockAvailable() {
+        BiometricManager manager = BiometricManager.from(getContext());
+        int kind = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            ? BiometricManager.Authenticators.BIOMETRIC_STRONG
+            : BiometricManager.Authenticators.BIOMETRIC_WEAK;
+        return manager.canAuthenticate(kind) == BiometricManager.BIOMETRIC_SUCCESS;
     }
 
-    private SecretKey getOrCreate(String alias) throws Exception {
+    /** Second fingerprint or face, then the phrase lives under a biometric-only key. */
+    private void wrapUnderBiometric(PluginCall call, JSObject ret, byte[] plain, String currentAlias) {
+        try {
+            String nextAlias = nextAlias(currentAlias);
+            SecretKey next = keyFor(nextAlias);
+            if (needsBiometricUpgrade(next)) {
+                finish(call, ret, plain);
+                return;
+            }
+            Cipher enc = Cipher.getInstance("AES/GCM/NoPadding");
+            enc.init(Cipher.ENCRYPT_MODE, next);
+            runBiometric(
+                call,
+                "Update passkey",
+                "Confirm your fingerprint or face once more",
+                enc,
+                (unlocked) -> {
+                    try {
+                        byte[] resealed = unlocked.doFinal(plain);
+                        ret.put("upgradedAlias", nextAlias);
+                        ret.put("upgradedIv", Base64.encodeToString(unlocked.getIV(), Base64.NO_WRAP));
+                        ret.put("upgradedCiphertext", Base64.encodeToString(resealed, Base64.NO_WRAP));
+                    } catch (Exception ignored) {
+                        // The current key still opens. The next unlock tries again.
+                    }
+                    finish(call, ret, plain);
+                },
+                (message) -> finish(call, ret, plain)
+            );
+        } catch (Exception err) {
+            finish(call, ret, plain);
+        }
+    }
+
+    private void finish(PluginCall call, JSObject ret, byte[] plain) {
+        try {
+            ret.put("plaintext", new String(plain, StandardCharsets.UTF_8));
+            call.resolve(ret);
+        } finally {
+            java.util.Arrays.fill(plain, (byte) 0);
+        }
+    }
+
+    /** Prefer the name alias. A weaker key stays until the new key has encrypted the phrase. */
+    private String aliasForSave(String name) throws Exception {
+        return openAlias(aliasFor(name));
+    }
+
+    private String nextAlias(String currentAlias) throws Exception {
+        return openAlias(currentAlias + "a");
+    }
+
+    /** First alias in the chain that is free, or already biometric-only. Never deletes a key. */
+    private String openAlias(String start) throws Exception {
         KeyStore ks = KeyStore.getInstance(STORE);
         ks.load(null);
-        if (ks.containsAlias(alias)) {
-            return existing(alias);
+        String alias = start;
+        for (int i = 0; i < 4; i++) {
+            if (!ks.containsAlias(alias)) return alias;
+            if (!needsBiometricUpgrade(existing(alias))) return alias;
+            alias = alias + "a";
         }
+        throw new IllegalStateException("Could not save the passkey.");
+    }
+
+    private SecretKey keyFor(String alias) throws Exception {
+        KeyStore ks = KeyStore.getInstance(STORE);
+        ks.load(null);
+        if (ks.containsAlias(alias)) return existing(alias);
         KeyGenerator gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, STORE);
-        gen.init(
-            new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .setRandomizedEncryptionRequired(true)
-                .build()
-        );
+        KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setRandomizedEncryptionRequired(true)
+            .setUserAuthenticationRequired(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            builder.setInvalidatedByBiometricEnrollment(false);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG);
+        } else {
+            builder.setUserAuthenticationValidityDurationSeconds(-1);
+        }
+        gen.init(builder.build());
         return gen.generateKey();
+    }
+
+    private boolean needsBiometricUpgrade(SecretKey key) {
+        try {
+            KeyInfo info = keyInfo(key);
+            if (!info.isUserAuthenticationRequired()) return true;
+            if (info.getUserAuthenticationValidityDurationSeconds() > 0) return true;
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && (info.getUserAuthenticationType() & KeyProperties.AUTH_DEVICE_CREDENTIAL) != 0
+            ) {
+                return true;
+            }
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && info.isInvalidatedByBiometricEnrollment();
+        } catch (Exception err) {
+            return false;
+        }
+    }
+
+    private void dropLegacyAlias(String primary, String used) {
+        if (primary.equals(used)) return;
+        try {
+            KeyStore ks = KeyStore.getInstance(STORE);
+            ks.load(null);
+            if (ks.containsAlias(primary)) ks.deleteEntry(primary);
+        } catch (Exception ignored) {
+            // The new key is already in the envelope. The old one can be removed later.
+        }
+    }
+
+    private boolean userAuthRequired(SecretKey key) {
+        try {
+            return keyInfo(key).isUserAuthenticationRequired();
+        } catch (Exception err) {
+            return false;
+        }
+    }
+
+    private KeyInfo keyInfo(SecretKey key) throws Exception {
+        SecretKeyFactory factory = SecretKeyFactory.getInstance(key.getAlgorithm(), STORE);
+        return (KeyInfo) factory.getKeySpec(key, KeyInfo.class);
     }
 
     private SecretKey existing(String alias) throws Exception {

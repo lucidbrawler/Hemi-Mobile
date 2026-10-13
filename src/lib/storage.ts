@@ -1,5 +1,7 @@
 import { PBKDF2_ITERATIONS } from "../chain";
-import { deleteNativePasskey, encryptWithNativePasskey } from "./devicePasskey";
+import { deleteNativePasskey, encryptWithNativePasskey, nativeShell, revealNativePasskey } from "./devicePasskey";
+import { vaultDelete, vaultList, vaultSet } from "./deviceVault";
+import { assertNativePassword } from "./password";
 import {
   decryptMnemonicWithPasskey,
   deleteDeviceKey,
@@ -7,9 +9,120 @@ import {
   type PasskeyBlock,
 } from "./passkey";
 
-const LEGACY_KEY = "hemi-btc-vault-v1";
+export const LEGACY_KEY = "hemi-btc-vault-v1";
 const NAMES_KEY = "hemi-btc-wallet-names-v1";
 const KIND = "hemi-btc-wallet-v1";
+
+/**
+ * On the phone, wallet envelopes live in EncryptedSharedPreferences. The
+ * in-memory cache is filled by hydrateVault() before the UI reads them.
+ * The browser keeps using localStorage.
+ */
+const secretCache = new Map<string, string>();
+let nativeVault = false;
+
+function isSecretKey(key: string): boolean {
+  return key === LEGACY_KEY || key === NAMES_KEY || key.startsWith(`${KIND}:`);
+}
+
+/** Local wallet rows that still need to be copied into the phone vault. */
+export function planSecretImport(
+  storedKeys: ReadonlySet<string>,
+  local: { key: string; value: string | null }[],
+): { key: string; value: string }[] {
+  const writes: { key: string; value: string }[] = [];
+  for (const row of local) {
+    if (!row.key || row.value == null || !isSecretKey(row.key)) continue;
+    if (storedKeys.has(row.key)) continue;
+    writes.push({ key: row.key, value: row.value });
+  }
+  return writes;
+}
+
+/**
+ * The original single-wallet save has no name. Move it to "Main" once.
+ * `dropLegacy` means the old key should be removed either way.
+ */
+export function planLegacyMigration(
+  has: (key: string) => boolean,
+  read: (key: string) => string | null,
+): { dropLegacy: boolean; mainValue: string | null; namesJson: string | null } {
+  const raw = read(LEGACY_KEY);
+  if (!raw) return { dropLegacy: false, mainValue: null, namesJson: null };
+  const names = parseNames(read(NAMES_KEY));
+  const main = slot("Main");
+  if (!names.some((name) => name.toLowerCase() === "main") && !has(main)) {
+    return { dropLegacy: true, mainValue: raw, namesJson: JSON.stringify([...names, "Main"]) };
+  }
+  return { dropLegacy: true, mainValue: null, namesJson: null };
+}
+
+function readSecret(key: string): string | null {
+  if (nativeVault) return secretCache.get(key) ?? null;
+  return localStorage.getItem(key);
+}
+
+async function putSecret(key: string, value: string): Promise<void> {
+  if (nativeVault) {
+    secretCache.set(key, value);
+    await vaultSet(key, value);
+    return;
+  }
+  localStorage.setItem(key, value);
+}
+
+async function dropSecret(key: string): Promise<void> {
+  if (nativeVault) {
+    secretCache.delete(key);
+    await vaultDelete(key);
+    return;
+  }
+  localStorage.removeItem(key);
+}
+
+function checkPassword(password: string) {
+  if (nativeShell()) assertNativePassword(password);
+  else if (password.length < 8) throw new Error("Password must be at least 8 characters.");
+}
+
+/** Copy any wallet envelopes out of WebView localStorage into the keystore vault. */
+export async function hydrateVault(): Promise<void> {
+  if (!nativeShell() || nativeVault) return;
+  const entries = await vaultList();
+  secretCache.clear();
+  for (const entry of entries) {
+    if (isSecretKey(entry.key)) secretCache.set(entry.key, entry.value);
+  }
+  const local: { key: string; value: string | null }[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && isSecretKey(key)) local.push({ key, value: localStorage.getItem(key) });
+  }
+  for (const row of planSecretImport(new Set(secretCache.keys()), local)) {
+    await vaultSet(row.key, row.value);
+    secretCache.set(row.key, row.value);
+  }
+  for (const row of local) localStorage.removeItem(row.key);
+  await migrateLegacyNative();
+  nativeVault = true;
+}
+
+async function migrateLegacyNative(): Promise<void> {
+  const plan = planLegacyMigration(
+    (key) => secretCache.has(key),
+    (key) => secretCache.get(key) ?? null,
+  );
+  if (!plan.dropLegacy) return;
+  if (plan.mainValue && plan.namesJson) {
+    const main = slot("Main");
+    secretCache.set(main, plan.mainValue);
+    await vaultSet(main, plan.mainValue);
+    secretCache.set(NAMES_KEY, plan.namesJson);
+    await vaultSet(NAMES_KEY, plan.namesJson);
+  }
+  secretCache.delete(LEGACY_KEY);
+  await vaultDelete(LEGACY_KEY);
+}
 
 export type PasswordCipher = {
   salt: string;
@@ -86,9 +199,8 @@ function slot(name: string): string {
   return `hemi-btc-wallet-v1:${encodeURIComponent(normalizeWalletName(name))}`;
 }
 
-function readNames(): string[] {
+function parseNames(raw: string | null): string[] {
   try {
-    const raw = localStorage.getItem(NAMES_KEY);
     const names = raw ? (JSON.parse(raw) as unknown) : [];
     return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
   } catch {
@@ -96,30 +208,37 @@ function readNames(): string[] {
   }
 }
 
-function writeNames(names: string[]) {
-  localStorage.setItem(NAMES_KEY, JSON.stringify(names));
+function readNames(): string[] {
+  return parseNames(readSecret(NAMES_KEY));
 }
 
-function remember(name: string) {
+async function writeNames(names: string[]): Promise<void> {
+  await putSecret(NAMES_KEY, JSON.stringify(names));
+}
+
+async function remember(name: string): Promise<void> {
   const names = readNames();
-  if (!names.some((row) => row.toLowerCase() === name.toLowerCase())) writeNames([...names, name]);
+  if (!names.some((row) => row.toLowerCase() === name.toLowerCase())) await writeNames([...names, name]);
 }
 
 /** Move the original single-wallet save into the list as "Main". */
 function migrateLegacy() {
-  const raw = localStorage.getItem(LEGACY_KEY);
-  if (!raw) return;
-  const names = readNames();
-  if (!names.some((name) => name.toLowerCase() === "main") && !localStorage.getItem(slot("Main"))) {
-    localStorage.setItem(slot("Main"), raw);
-    writeNames([...names, "Main"]);
+  if (nativeVault) return;
+  const plan = planLegacyMigration(
+    (key) => localStorage.getItem(key) != null,
+    (key) => localStorage.getItem(key),
+  );
+  if (!plan.dropLegacy) return;
+  if (plan.mainValue && plan.namesJson) {
+    localStorage.setItem(slot("Main"), plan.mainValue);
+    localStorage.setItem(NAMES_KEY, plan.namesJson);
   }
   localStorage.removeItem(LEGACY_KEY);
 }
 
 function readRaw(name: string): string | null {
-  migrateLegacy();
-  return localStorage.getItem(slot(name));
+  if (!nativeVault) migrateLegacy();
+  return readSecret(slot(name));
 }
 
 function parseEnvelope(raw: string | null): VaultEnvelope | null {
@@ -168,7 +287,7 @@ export function inspectWallet(name: string): VaultAuth {
 export function listWallets(): SavedWallet[] {
   migrateLegacy();
   return readNames().flatMap((name) => {
-    const raw = localStorage.getItem(slot(name));
+    const raw = readSecret(slot(name));
     const auth = authOf(raw);
     if (!auth.saved) return [];
     const env = parseEnvelope(raw);
@@ -231,19 +350,40 @@ export async function loadByPassword(name: string, password: string): Promise<st
 }
 
 export async function loadByPasskey(name: string): Promise<string> {
-  const env = parseEnvelope(readRaw(name));
+  const walletName = normalizeWalletName(name);
+  const env = parseEnvelope(readRaw(walletName));
   if (!env?.passkey) throw new Error("This wallet has no passkey.");
-  return decryptMnemonicWithPasskey(env.passkey);
+  if (env.passkey.mode !== "native") return decryptMnemonicWithPasskey(env.passkey);
+  const opened = await revealNativePasskey(env.passkey);
+  if (opened.upgraded) {
+    const previous = env.passkey.credentialId;
+    try {
+      env.passkey = opened.upgraded;
+      await putSecret(slot(walletName), JSON.stringify(env));
+      if (previous && previous !== opened.upgraded.credentialId) await deleteNativePasskey(previous);
+    } catch {
+      // The old key still opens. The next unlock tries the upgrade again.
+    }
+  }
+  return opened.plaintext;
 }
 
 export async function saveWithPasskey(
   name: string,
   mnemonic: string,
   hint: string,
-  options: { password?: string; require2fa: boolean; native: boolean },
+  options: { password?: string; require2fa: boolean; native: boolean; existingPassword?: boolean },
 ): Promise<void> {
   const walletName = normalizeWalletName(name);
-  if (options.require2fa && (!options.password || options.password.length < 8)) {
+  if (options.require2fa && !options.existingPassword) {
+    if (!options.password) throw new Error("2FA needs a password of at least 8 characters.");
+    try {
+      checkPassword(options.password);
+    } catch (err) {
+      if (!nativeShell()) throw new Error("2FA needs a password of at least 8 characters.");
+      throw err;
+    }
+  } else if (options.require2fa && !options.password) {
     throw new Error("2FA needs a password of at least 8 characters.");
   }
   const previous = parseEnvelope(readRaw(walletName));
@@ -262,13 +402,13 @@ export async function saveWithPasskey(
     password,
     passkey,
   };
-  localStorage.setItem(slot(walletName), JSON.stringify(envelope));
-  remember(walletName);
+  await putSecret(slot(walletName), JSON.stringify(envelope));
+  await remember(walletName);
 }
 
 export async function savePasswordOnly(name: string, mnemonic: string, password: string, hint: string): Promise<void> {
   const walletName = normalizeWalletName(name);
-  if (password.length < 8) throw new Error("Password must be at least 8 characters.");
+  checkPassword(password);
   const previous = parseEnvelope(readRaw(walletName));
   if (previous?.passkey) await dropPasskey(previous.passkey);
   const envelope: VaultEnvelope = {
@@ -279,26 +419,26 @@ export async function savePasswordOnly(name: string, mnemonic: string, password:
     password: await encryptPassword(password, mnemonic),
     passkey: null,
   };
-  localStorage.setItem(slot(walletName), JSON.stringify(envelope));
-  remember(walletName);
+  await putSecret(slot(walletName), JSON.stringify(envelope));
+  await remember(walletName);
 }
 
 export async function attachPassword2fa(name: string, mnemonic: string, password: string): Promise<void> {
   const walletName = normalizeWalletName(name);
   const env = parseEnvelope(readRaw(walletName));
   if (!env?.passkey) throw new Error("Enable a passkey before turning on 2FA.");
-  if (password.length < 8) throw new Error("Password must be at least 8 characters.");
+  checkPassword(password);
   env.password = await encryptPassword(password, mnemonic);
   env.require2fa = true;
-  localStorage.setItem(slot(walletName), JSON.stringify(env));
+  await putSecret(slot(walletName), JSON.stringify(env));
 }
 
 export async function forgetWallet(name: string): Promise<void> {
   const walletName = normalizeWalletName(name);
   const env = parseEnvelope(readRaw(walletName));
   if (env?.passkey) await dropPasskey(env.passkey);
-  localStorage.removeItem(slot(walletName));
-  writeNames(readNames().filter((row) => row.toLowerCase() !== walletName.toLowerCase()));
+  await dropSecret(slot(walletName));
+  await writeNames(readNames().filter((row) => row.toLowerCase() !== walletName.toLowerCase()));
 }
 
 const HISTORY_KEY = "hemi-btc-tunnel-history-v1";

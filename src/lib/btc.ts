@@ -41,6 +41,18 @@ export function assertBtcAddress(address: string): string {
   return text;
 }
 
+/** Miner fee for a plain send, from the live UTXOs and fee rate. Null when the quote cannot be built. */
+export async function quoteBtcSendFee(address: string, amount: bigint): Promise<bigint | null> {
+  if (amount <= 0n) return null;
+  try {
+    const [utxos, rate] = await Promise.all([fetchUtxos(address), fetchFeeRate()]);
+    if (utxos.length === 0 || !Number.isFinite(rate) || rate <= 0) return null;
+    return estimateSpend(utxos, amount, rate, false);
+  } catch {
+    return null;
+  }
+}
+
 /** Rough miner fee for a payment of `amount`, including an OP_RETURN when `withMemo` is set. */
 export function estimateSpend(utxos: Utxo[], amount: bigint, feeRate: number, withMemo: boolean): bigint {
   const outputs = withMemo ? 3 : 2;
