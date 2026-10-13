@@ -1,6 +1,6 @@
 # Hemi BTC
 
-Unofficial demo wallet for **native Bitcoin**, **hemiBTC**, and **ETH** on Hemi mainnet. The tunnel screen moves Bitcoin through the native vault and ETH through the Hemi standard bridge. It follows the layout of the Warthog mobile wallet (dark cards, a balance hero, a bottom tab bar) and uses Hemi’s public palette: black, white, and orange `#FF4600`.
+Unofficial demo wallet for **native Bitcoin**, **hemiBTC**, and **ETH** on Hemi mainnet. The tunnel screen moves Bitcoin through the native vault and ETH through the Hemi standard bridge. The layout uses dark cards, a balance hero, and a bottom tab bar, with Hemi’s public palette: black, white, and orange `#FF4600`.
 
 This is not a Hemi Labs product. The Hemi name and hemiBTC ticker are used so the demo is recognizable. The mark in the header is original.
 
@@ -28,7 +28,7 @@ The browser and the phone do not store the phrase the same way.
 
 **Browser.** A passkey uses WebAuthn. When the browser returns a PRF secret, the AES key is derived from that secret and is not stored. Otherwise the passkey prompt is the user check and a non-extractable AES key stays in IndexedDB for that site. A password is optional 2FA (at least 8 characters). The locked blob is in `localStorage`. Older wallets saved with a password alone still open, and can add a passkey from the wallet tab.
 
-**Phone.** The locked blob is in Android encrypted preferences, under a keystore master key. The first launch copies any wallet out of WebView storage and deletes that copy. Android backup is off. A new password has to meet the same bar as the Warthog wallet: 4 of 8 characters, lowercase, uppercase, a number, and a symbol. An older shorter password still unlocks.
+**Phone.** The locked blob is in Android encrypted preferences, under a keystore master key. The first launch copies any wallet out of WebView storage and deletes that copy. Android backup is off. A new password has to clear 4 of these 5 checks: 8 characters, lowercase, uppercase, a number, and a symbol. An older shorter password still unlocks.
 
 The phone passkey is an Android Keystore AES key. It never enters JavaScript. The system asks for a fingerprint or face every time the phrase is read. A device PIN is not accepted. Enrolling another fingerprint does not delete the key. A passkey saved on an older build still opens with a fingerprint or face, and that unlock wraps the phrase under a new key. The first unlock after this update can ask twice.
 

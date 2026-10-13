@@ -15,8 +15,7 @@ import java.util.Map;
 /**
  * Phone vault for wallet envelopes. Values are encrypted with a keystore
  * master key (EncryptedSharedPreferences). Reading them does not ask for a
- * fingerprint. The password or the passkey key is the secret, matching the
- * Warthog wallet's SecureStore envelope.
+ * fingerprint. The password or the passkey key is the secret.
  */
 @CapacitorPlugin(name = "DeviceVault")
 public class DeviceVaultPlugin extends Plugin {

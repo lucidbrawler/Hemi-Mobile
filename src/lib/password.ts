@@ -1,4 +1,4 @@
-/** Same bar as the Warthog wallet: 4 of these 5 checks is "Good". */
+/** 4 of these 5 checks is "Good". */
 
 export const NATIVE_PASSWORD_ERROR =
   "Password is too weak. Use at least 8 characters, with uppercase, lowercase, and a number.";
