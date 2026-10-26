@@ -21,7 +21,7 @@ import { WETH, holdingUsd, usdToSats, walletValueUsd, type PriceBook, type Value
 import { readStake, stakeExtensions, stakeLockedUsd, stakeRewardLine, stakeRewardTokens, stakeRewardsUsd, type StakePosition } from "../lib/stake";
 import { nativeShell } from "../lib/devicePasskey";
 import { NATIVE_PASSWORD_ERROR, passwordMeetsBar } from "../lib/password";
-import { getSessionMnemonic } from "../lib/sessionVault";
+import { exportPhrase } from "../lib/sessionVault";
 import { useWallet } from "../state";
 import { PasswordRules } from "./PasswordRules";
 import { MerklOnPosition, useMerklRewards } from "./MerklPosition";
@@ -1253,14 +1253,14 @@ function Enable2fa({ onClose }: { onClose: () => void }) {
 }
 
 function Phrase({ onClose }: { onClose: () => void }) {
-  const phrase = getSessionMnemonic();
-  const [open, setOpen] = useState(false);
+  const [phrase, setPhrase] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   return (
     <div className="sheet-back" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <h2>Recovery phrase</h2>
         <p className="fine">Anyone with these words can move the Bitcoin, the hemiBTC, the HEMI, the VUSD, and the ETH.</p>
-        {open ? (
+        {phrase ? (
           <ol className="words">
             {phrase.split(" ").map((word, index) => (
               <li key={`${word}-${index}`}>
@@ -1270,10 +1270,22 @@ function Phrase({ onClose }: { onClose: () => void }) {
             ))}
           </ol>
         ) : (
-          <button className="btn primary wide" type="button" onClick={() => setOpen(true)}>
+          <button
+            className="btn primary wide"
+            type="button"
+            onClick={() => {
+              try {
+                setPhrase(exportPhrase());
+                setError(null);
+              } catch (err) {
+                setError(messageOf(err));
+              }
+            }}
+          >
             Show phrase
           </button>
         )}
+        {error && <p className="banner bad">{error}</p>}
         <button className="ghost wide" style={{ marginTop: 8 }} type="button" onClick={onClose}>Close</button>
       </div>
     </div>

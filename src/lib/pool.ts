@@ -1,7 +1,9 @@
-import { Contract, Interface, Wallet, getAddress } from "ethers";
-import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_TOKEN, SUSHI_POSITION_MANAGER, VETRO_USD, VUSD, WBTC } from "../chain";
+import { Contract, Interface, getAddress } from "ethers";
+import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, SUSHI_POSITION_MANAGER, VETRO_USD, VUSD, WBTC } from "../chain";
+import { broadcastEvm, sendCall } from "./evmSend.ts";
 import { formatUnits, parseUnits } from "./format";
 import { hemiProvider } from "./hemi";
+import { requirePublic } from "./sessionVault.ts";
 import { ETH_GAS_RESERVE } from "./swap";
 
 /** Canonical WETH on Hemi. Pool token0 when the deposit pays native ETH. */
@@ -236,8 +238,6 @@ export async function poolNeedsApproval(owner: string, pool: PoolInfo, amount0: 
 }
 
 export async function executePoolDeposit(
-  privateKey: string,
-  from: string,
   order: PoolDeposit,
   onPhase?: (phase: "approve" | "deposit") => void,
 ): Promise<string> {
@@ -254,7 +254,7 @@ export async function executePoolDeposit(
     throw new Error("The pool price moved. Check the new amounts before depositing.");
   }
 
-  const wallet = new Wallet(privateKey, hemiProvider());
+  const from = requirePublic().hemiAddress;
   const manager = getAddress(managerFor(pool.venue));
   const value = ethValue(pool, fresh.amount0, fresh.amount1);
   const eth = await hemiProvider().getBalance(from);
@@ -264,7 +264,7 @@ export async function executePoolDeposit(
     throw new Error("This Hemi address has no ETH for gas.");
   }
   for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
-    const token = new Contract(need.token, allowanceAbi, wallet);
+    const token = new Contract(need.token, allowanceAbi, hemiProvider());
     const balance = await token.balanceOf(from) as bigint;
     if (balance < need.amount) {
       throw new Error(`Only ${formatUnits(balance, need.decimals)} ${need.label} is in this wallet.`);
@@ -273,36 +273,33 @@ export async function executePoolDeposit(
 
   let approving = false;
   for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
-    const token = new Contract(need.token, allowanceAbi, wallet);
+    const token = new Contract(need.token, allowanceAbi, hemiProvider());
     const allowed = await token.allowance(from, manager) as bigint;
     if (allowed < need.amount) {
       if (!approving) {
         approving = true;
         onPhase?.("approve");
       }
-      const approveTx = await token.approve(manager, need.amount);
-      await approveTx.wait();
+      await sendCall(hemiProvider(), HEMI_CHAIN_ID, need.token, allowanceAbi, "approve", [manager, need.amount]);
     }
   }
 
   onPhase?.("deposit");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const data = encodeDeposit(pool, fresh, from, deadline, value > 0n);
-  const tx = await wallet.sendTransaction({ to: manager, data, value });
-  const receipt = await tx.wait();
-  if (receipt && receipt.status === 0) throw new Error("The deposit failed.");
-  return receipt?.hash ?? tx.hash;
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: manager, data, value });
+  if (sent.receipt && sent.receipt.status === 0) throw new Error("The deposit failed.");
+  return sent.hash;
 }
 
 export async function executePoolIncrease(
-  privateKey: string,
-  from: string,
   order: PoolIncrease,
   onPhase?: (phase: "approve" | "deposit") => void,
 ): Promise<string> {
   const pool = poolById(order.poolId);
   if (!pool) throw new Error("Pick a pool.");
   if (order.amount <= 0n) throw new Error("Enter an amount to add.");
+  const from = requirePublic().hemiAddress;
 
   const reader = new Contract(getAddress(managerFor(pool.venue)), ownedPositionAbi, hemiProvider());
   let owner: string;
@@ -333,7 +330,6 @@ export async function executePoolIncrease(
     throw new Error("The pool price moved. Check the new amounts before adding.");
   }
 
-  const wallet = new Wallet(privateKey, hemiProvider());
   const manager = getAddress(managerFor(pool.venue));
   const value = ethValue(pool, fresh.amount0, fresh.amount1);
   const eth = await hemiProvider().getBalance(from);
@@ -343,7 +339,7 @@ export async function executePoolIncrease(
     throw new Error("This Hemi address has no ETH for gas.");
   }
   for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
-    const token = new Contract(need.token, allowanceAbi, wallet);
+    const token = new Contract(need.token, allowanceAbi, hemiProvider());
     const balance = await token.balanceOf(from) as bigint;
     if (balance < need.amount) {
       throw new Error(`Only ${formatUnits(balance, need.decimals)} ${need.label} is in this wallet.`);
@@ -352,25 +348,23 @@ export async function executePoolIncrease(
 
   let approving = false;
   for (const need of spenders(pool, fresh.amount0, fresh.amount1)) {
-    const token = new Contract(need.token, allowanceAbi, wallet);
+    const token = new Contract(need.token, allowanceAbi, hemiProvider());
     const allowed = await token.allowance(from, manager) as bigint;
     if (allowed < need.amount) {
       if (!approving) {
         approving = true;
         onPhase?.("approve");
       }
-      const approveTx = await token.approve(manager, need.amount);
-      await approveTx.wait();
+      await sendCall(hemiProvider(), HEMI_CHAIN_ID, need.token, allowanceAbi, "approve", [manager, need.amount]);
     }
   }
 
   onPhase?.("deposit");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const data = encodeIncrease(pool, order.tokenId, fresh, deadline, value > 0n);
-  const tx = await wallet.sendTransaction({ to: manager, data, value });
-  const receipt = await tx.wait();
-  if (receipt && receipt.status === 0) throw new Error("The add failed.");
-  return receipt?.hash ?? tx.hash;
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: manager, data, value });
+  if (sent.receipt && sent.receipt.status === 0) throw new Error("The add failed.");
+  return sent.hash;
 }
 
 type PoolState = { sqrtPriceX96: bigint; tickLower: number; tickUpper: number };

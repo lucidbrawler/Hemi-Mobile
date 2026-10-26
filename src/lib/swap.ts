@@ -1,6 +1,8 @@
-import { Contract, Wallet, getAddress } from "ethers";
+import { Contract, getAddress } from "ethers";
 import { HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
+import { sendCall, broadcastEvm } from "./evmSend.ts";
 import { hemiProvider } from "./hemi";
+import { requirePublic } from "./sessionVault.ts";
 
 /** Sushi RedSnwapper on Hemi. Swap calldata is only sent here. */
 const SUSHI_ROUTER = "0xac4c6e212a361c968f1725b4d055b47e63f80b75";
@@ -100,33 +102,29 @@ export async function routerNeedsApproval(owner: string, sell: SwapAssetId, venu
 }
 
 export async function executeSwap(
-  privateKey: string,
-  from: string,
   order: SwapOrder,
   onPhase?: (phase: "approve" | "swap") => void,
 ): Promise<string> {
   if (order.sell === order.buy) throw new Error("Choose two different tokens.");
   if (order.amountIn <= 0n) throw new Error("Enter an amount to swap.");
+  const from = requirePublic().hemiAddress;
   const fresh = order.venue === "sushi"
     ? await freshSushi(order, from)
     : await freshNordstern(order, from);
   if (fresh.minOut < order.minOut) throw new Error("The price moved. Check the new quote before swapping.");
 
-  const wallet = new Wallet(privateKey, hemiProvider());
   const sell = ASSETS[order.sell];
   if (!sell.native) {
-    const token = new Contract(sell.address, allowanceAbi, wallet);
+    const token = new Contract(sell.address, allowanceAbi, hemiProvider());
     const allowed = await token.allowance(from, fresh.to) as bigint;
     if (allowed < order.amountIn) {
       onPhase?.("approve");
-      const approveTx = await token.approve(fresh.to, order.amountIn);
-      await approveTx.wait();
+      await sendCall(hemiProvider(), HEMI_CHAIN_ID, sell.address, allowanceAbi, "approve", [fresh.to, order.amountIn]);
     }
   }
   onPhase?.("swap");
-  const tx = await wallet.sendTransaction({ to: fresh.to, data: fresh.data, value: fresh.value });
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: fresh.to, data: fresh.data, value: fresh.value });
+  return sent.hash;
 }
 
 async function quoteSushi(sell: SwapAssetId, buy: SwapAssetId, amountIn: bigint): Promise<SwapQuote> {

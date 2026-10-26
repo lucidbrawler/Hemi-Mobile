@@ -1,18 +1,13 @@
-import { HDKey } from "@scure/bip32";
-import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
+import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
-import { p2wpkh } from "@scure/btc-signer";
-import { NETWORK } from "@scure/btc-signer";
-import { HDNodeWallet } from "ethers";
-import { BTC_PATH, HEMI_PATH } from "../chain.ts";
+import { publicChains } from "./phraseSign.ts";
 
+/** Public data for a phrase the user is creating or importing. No private keys. */
 export type DerivedWallet = {
   mnemonic: string;
   btcAddress: string;
   btcPublicKey: Uint8Array;
-  btcPrivateKey: Uint8Array;
   hemiAddress: string;
-  hemiPrivateKey: string;
 };
 
 export function createMnemonic(): string {
@@ -29,19 +24,11 @@ export function assertMnemonic(phrase: string): string {
 
 export function deriveWallet(phrase: string): DerivedWallet {
   const mnemonic = assertMnemonic(phrase);
-  const seed = mnemonicToSeedSync(mnemonic);
-  const btc = HDKey.fromMasterSeed(seed).derive(BTC_PATH);
-  if (!btc.privateKey || !btc.publicKey) throw new Error("Could not derive the Bitcoin key.");
-  const payment = p2wpkh(btc.publicKey, NETWORK);
-  if (!payment.address) throw new Error("Could not encode the Bitcoin address.");
-
-  const hemi = HDNodeWallet.fromPhrase(mnemonic, undefined, HEMI_PATH);
+  const pubs = publicChains(mnemonic);
   return {
     mnemonic,
-    btcAddress: payment.address,
-    btcPublicKey: btc.publicKey,
-    btcPrivateKey: btc.privateKey,
-    hemiAddress: hemi.address,
-    hemiPrivateKey: hemi.privateKey,
+    btcAddress: pubs.btcAddress,
+    btcPublicKey: pubs.btcPublicKey,
+    hemiAddress: pubs.hemiAddress,
   };
 }

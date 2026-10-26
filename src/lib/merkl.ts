@@ -1,7 +1,9 @@
 import { Capacitor } from "@capacitor/core";
-import { Contract, Wallet, getAddress } from "ethers";
+import { getAddress } from "ethers";
 import { HEMI_CHAIN_ID, MERKL_DISTRIBUTOR } from "../chain";
+import { sendCall } from "./evmSend.ts";
 import { hemiProvider } from "./hemi";
+import { requirePublic } from "./sessionVault.ts";
 import {
   poolAddress,
   readMerklWallet,
@@ -77,28 +79,26 @@ export function loadMerklWallet(owner: string, fresh = false): Promise<MerklWall
 }
 
 /** Claim the wallet's full unclaimed balance of these reward tokens. */
-export async function claimMerklRewards(privateKey: string, tokenAddresses: readonly string[]): Promise<string> {
+export async function claimMerklRewards(tokenAddresses: readonly string[]): Promise<string> {
   const want = new Set(tokenAddresses.map((item) => item.toLowerCase()));
   if (want.size === 0) throw new Error("Nothing is ready to claim for this position.");
-  const wallet = new Wallet(privateKey, hemiProvider());
-  const live = await readWallet(wallet.address, true);
+  const holder = requirePublic().hemiAddress;
+  const live = await readWallet(holder, true);
   const picked = live.claims.filter((item): item is MerklClaimToken & { proofs: string[] } => (
     want.has(item.address) && item.claimable > 0n && item.proofs != null
   ));
   if (picked.length === 0) throw new Error("Nothing is ready to claim for this position.");
-  const eth = await hemiProvider().getBalance(wallet.address);
+  const eth = await hemiProvider().getBalance(holder);
   if (eth === 0n) throw new Error("This Hemi address has no ETH for gas.");
-  const distributor = new Contract(MERKL_DISTRIBUTOR, distributorAbi, wallet);
-  const tx = await distributor.claim(
-    picked.map(() => wallet.address),
+  const sent = await sendCall(hemiProvider(), HEMI_CHAIN_ID, MERKL_DISTRIBUTOR, distributorAbi, "claim", [
+    picked.map(() => holder),
     picked.map((item) => getAddress(item.address)),
     picked.map((item) => item.amount),
     picked.map((item) => item.proofs),
-  );
-  const receipt = await tx.wait();
-  if (receipt && receipt.status === 0) throw new Error("The claim failed.");
+  ]);
+  if (sent.receipt && sent.receipt.status === 0) throw new Error("The claim failed.");
   userStored = null;
-  return receipt?.hash ?? tx.hash;
+  return sent.hash;
 }
 
 export function merklAmountUsd(

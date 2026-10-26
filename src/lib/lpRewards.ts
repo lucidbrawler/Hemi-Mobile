@@ -1,7 +1,10 @@
-import { Contract, Interface, Wallet, getAddress } from "ethers";
+import { Contract, Interface, getAddress } from "ethers";
+import { HEMI_CHAIN_ID } from "../chain";
+import { broadcastEvm } from "./evmSend.ts";
 import { formatUnits } from "./format";
 import { legsUsd, walletValueUsd, type PriceBook, type ValuedHolding } from "./prices";
 import { hemiProvider } from "./hemi";
+import { requirePublic } from "./sessionVault.ts";
 import {
   amountsForLiquidity,
   assetSpec,
@@ -114,30 +117,29 @@ export async function loadLpRewards(owner: string): Promise<LpRewardSnapshot> {
   };
 }
 
-export async function claimPositionFees(privateKey: string, venue: PoolVenue, tokenId: bigint): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
+export async function claimPositionFees(venue: PoolVenue, tokenId: bigint): Promise<string> {
+  const holder = requirePublic().hemiAddress;
   const manager = getAddress(managerFor(venue));
-  const npm = new Contract(manager, positionAbi, wallet);
+  const npm = new Contract(manager, positionAbi, hemiProvider());
   const position = await readOne(npm, tokenId);
   if (!position) throw new Error("This position could not be read.");
-  const fees = await previewFees(manager, tokenId, wallet.address);
+  const fees = await previewFees(manager, tokenId, holder);
   if (!fees || (fees.amount0 === 0n && fees.amount1 === 0n)) {
     throw new Error("Nothing is ready to claim for this position.");
   }
-  const eth = await hemiProvider().getBalance(wallet.address);
+  const eth = await hemiProvider().getBalance(holder);
   if (eth === 0n) throw new Error("This Hemi address has no ETH for gas.");
-  const data = encodeClaim(venue, tokenId, wallet.address, position.token0, position.token1);
-  const tx = await wallet.sendTransaction({ to: manager, data, value: 0n });
-  const receipt = await tx.wait();
-  if (receipt && receipt.status === 0) throw new Error("The claim failed.");
-  return receipt?.hash ?? tx.hash;
+  const data = encodeClaim(venue, tokenId, holder, position.token0, position.token1);
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: manager, data, value: 0n });
+  if (sent.receipt && sent.receipt.status === 0) throw new Error("The claim failed.");
+  return sent.hash;
 }
 
-export async function withdrawLp(privateKey: string, order: LpWithdraw): Promise<string> {
+export async function withdrawLp(order: LpWithdraw): Promise<string> {
   if (!Number.isInteger(order.percent) || order.percent < 1 || order.percent > 100) {
     throw new Error("Pick a share of the position.");
   }
-  const wallet = new Wallet(privateKey, hemiProvider());
+  const holder = requirePublic().hemiAddress;
   const manager = getAddress(managerFor(order.venue));
   const npm = new Contract(manager, positionAbi, hemiProvider());
   let owner: string;
@@ -146,7 +148,7 @@ export async function withdrawLp(privateKey: string, order: LpWithdraw): Promise
   } catch {
     throw new Error("This position could not be read.");
   }
-  if (getAddress(owner) !== getAddress(wallet.address)) throw new Error("This position is not in this wallet.");
+  if (getAddress(owner) !== getAddress(holder)) throw new Error("This position is not in this wallet.");
   const position = await readOne(npm, order.tokenId);
   if (!position) throw new Error("This position could not be read.");
   const pool = findPool(order.venue, position.token0, position.token1, position.fee);
@@ -170,13 +172,13 @@ export async function withdrawLp(privateKey: string, order: LpWithdraw): Promise
   if (fresh.amount0 < order.min0 || fresh.amount1 < order.min1) {
     throw new Error("The pool price moved. Check the new amounts before withdrawing.");
   }
-  const eth = await hemiProvider().getBalance(wallet.address);
+  const eth = await hemiProvider().getBalance(holder);
   if (eth === 0n) throw new Error("This Hemi address has no ETH for gas.");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
   const data = encodeWithdraw(
     order.venue,
     order.tokenId,
-    wallet.address,
+    holder,
     position.token0,
     position.token1,
     order.liquidityOut,
@@ -185,10 +187,9 @@ export async function withdrawLp(privateKey: string, order: LpWithdraw): Promise
     deadline,
     order.percent === 100,
   );
-  const tx = await wallet.sendTransaction({ to: manager, data, value: 0n });
-  const receipt = await tx.wait();
-  if (receipt && receipt.status === 0) throw new Error("The withdrawal failed.");
-  return receipt?.hash ?? tx.hash;
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: manager, data, value: 0n });
+  if (sent.receipt && sent.receipt.status === 0) throw new Error("The withdrawal failed.");
+  return sent.hash;
 }
 
 async function listVenue(owner: string, venue: PoolVenue): Promise<{ positions: LpPosition[]; truncated: boolean }> {

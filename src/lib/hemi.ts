@@ -1,5 +1,6 @@
-import { Contract, Interface, JsonRpcProvider, Wallet, getAddress, isAddress } from "ethers";
+import { Contract, Interface, JsonRpcProvider, getAddress, isAddress } from "ethers";
 import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MERKL_DISTRIBUTOR, MEMPOOL, SUSHI_POSITION_MANAGER, USDT, VAULT_FACTORY, VAULT_INDEX, VETRO_USD, VUSD, WBTC } from "../chain";
+import { broadcastEvm, sendCall } from "./evmSend.ts";
 
 const erc20Abi = [
   "function name() view returns (string)",
@@ -170,11 +171,9 @@ export async function quoteHemiTokenFee(from: string, token: string, to: string,
   return pricedGas(hemiProvider(), { from, to: token, value: 0n, data }, null);
 }
 
-export async function sendEth(privateKey: string, to: string, amount: bigint): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  const tx = await wallet.sendTransaction({ to: requireEvmAddress(to), value: amount });
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+export async function sendEth(to: string, amount: bigint): Promise<string> {
+  const sent = await broadcastEvm(hemiProvider(), HEMI_CHAIN_ID, { to: requireEvmAddress(to), value: amount });
+  return sent.hash;
 }
 
 export type Erc20Balance = {
@@ -204,24 +203,32 @@ export async function readErc20(
   };
 }
 
-export async function sendErc20(privateKey: string, tokenAddress: string, to: string, amount: bigint): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  const token = new Contract(tokenAddress, erc20Abi, wallet);
-  const tx = await token.transfer(requireEvmAddress(to), amount);
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+export async function sendErc20(tokenAddress: string, to: string, amount: bigint): Promise<string> {
+  const sent = await sendCall(
+    hemiProvider(),
+    HEMI_CHAIN_ID,
+    tokenAddress,
+    erc20Abi,
+    "transfer",
+    [requireEvmAddress(to), amount],
+  );
+  return sent.hash;
 }
 
-export async function sendHemiBtc(privateKey: string, to: string, amount: bigint): Promise<string> {
-  return sendErc20(privateKey, HEMIBTC, to, amount);
+export async function sendHemiBtc(to: string, amount: bigint): Promise<string> {
+  return sendErc20(HEMIBTC, to, amount);
 }
 
-export async function withdrawToBitcoin(privateKey: string, btcAddress: string, amount: bigint): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  const factory = new Contract(VAULT_FACTORY, factoryAbi, wallet);
-  const tx = await factory.initiateWithdrawal(VAULT_INDEX, btcAddress, amount);
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+export async function withdrawToBitcoin(btcAddress: string, amount: bigint): Promise<string> {
+  const sent = await sendCall(
+    hemiProvider(),
+    HEMI_CHAIN_ID,
+    VAULT_FACTORY,
+    factoryAbi,
+    "initiateWithdrawal",
+    [VAULT_INDEX, btcAddress, amount],
+  );
+  return sent.hash;
 }
 
 /** Bitcoin txid as the vault stores it: the display id, with a 0x prefix, not byte-reversed. */
@@ -240,16 +247,16 @@ export async function readDepositAcknowledged(stateAddress: string, txid: string
   return state.isDepositAcknowledged(depositTxId(txid)) as Promise<boolean>;
 }
 
-export async function confirmHemiDeposit(
-  privateKey: string,
-  txid: string,
-  outputIndex: number,
-): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  const factory = new Contract(VAULT_FACTORY, factoryAbi, wallet);
-  const tx = await factory.confirmDeposit(VAULT_INDEX, depositTxId(txid), BigInt(outputIndex), "0x");
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+export async function confirmHemiDeposit(txid: string, outputIndex: number): Promise<string> {
+  const sent = await sendCall(
+    hemiProvider(),
+    HEMI_CHAIN_ID,
+    VAULT_FACTORY,
+    factoryAbi,
+    "confirmDeposit",
+    [VAULT_INDEX, depositTxId(txid), BigInt(outputIndex), "0x"],
+  );
+  return sent.hash;
 }
 
 export function hemiAddressUrl(address: string): string {

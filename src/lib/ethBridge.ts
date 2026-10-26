@@ -3,7 +3,6 @@ import {
   Contract,
   Interface,
   JsonRpcProvider,
-  Wallet,
   ZeroHash,
   getAddress,
   hexlify,
@@ -24,6 +23,8 @@ import {
   L2_STANDARD_BRIDGE,
   OPTIMISM_PORTAL,
 } from "../chain.ts";
+import { broadcastEvm, sendCall } from "./evmSend.ts";
+import { requirePublic } from "./sessionVault.ts";
 
 const coder = AbiCoder.defaultAbiCoder();
 
@@ -147,27 +148,25 @@ export async function readEthereumSettled(hash: string): Promise<boolean> {
 }
 
 /** Send native ETH on Ethereum. The network fee is extra and stays in this wallet. */
-export async function sendEthereum(privateKey: string, to: string, amount: bigint): Promise<string> {
+export async function sendEthereum(to: string, amount: bigint): Promise<string> {
   if (amount <= 0n) throw new Error("Enter an amount of ETH.");
   const dest = requireEthAddress(to);
-  const wallet = new Wallet(privateKey, ethProvider());
-  const provider = wallet.provider;
-  if (!provider) throw new Error("Ethereum is unavailable.");
-  const [balance, fee] = await Promise.all([provider.getBalance(wallet.address), provider.getFeeData()]);
+  const from = requirePublic().hemiAddress;
+  const provider = ethProvider();
+  const [balance, fee] = await Promise.all([provider.getBalance(from), provider.getFeeData()]);
   const price = fee.maxFeePerGas ?? fee.gasPrice;
   if (price == null) throw new Error("Ethereum fee is unavailable.");
   let gas = 21_000n;
   try {
-    gas = await wallet.estimateGas({ to: dest, value: amount });
+    gas = await provider.estimateGas({ from, to: dest, value: amount });
   } catch {
     // A full-balance send cannot be estimated. The reserve below still keeps the fee.
   }
   if (amount + gas * price * 3n / 2n > balance) {
     throw new Error("Leave some ETH for the Ethereum network fee.");
   }
-  const tx = await wallet.sendTransaction({ to: dest, value: amount });
-  const receipt = await tx.wait();
-  return receipt?.hash ?? tx.hash;
+  const sent = await broadcastEvm(provider, ETH_CHAIN_ID, { to: dest, value: amount });
+  return sent.hash;
 }
 
 export function ethTxUrl(hash: string): string {
@@ -271,7 +270,6 @@ export async function destinationIsContract(kind: "deposit" | "withdraw", addres
 
 async function sendBridge(
   kind: "deposit" | "withdraw",
-  privateKey: string,
   to: string,
   amount: bigint,
 ): Promise<{ hash: string; receipt: TransactionReceipt | null }> {
@@ -282,17 +280,21 @@ async function sendBridge(
   if (amount <= 0n) throw new Error("Enter an amount of ETH.");
   const dest = requireEthAddress(to);
   const provider = kind === "deposit" ? ethProvider() : l2Provider();
-  const wallet = new Wallet(privateKey, provider);
-  const balance = await provider.getBalance(wallet.address);
+  const balance = await provider.getBalance(requirePublic().hemiAddress);
   if (amount >= balance) throw new Error("Leave some ETH in this wallet for the network fee.");
-  const bridge = new Contract(kind === "deposit" ? L1_STANDARD_BRIDGE : L2_STANDARD_BRIDGE, bridgeAbi, wallet);
-  const tx = await bridge.bridgeETHTo(dest, BRIDGE_MIN_GAS, "0x", { value: amount });
-  const receipt = await tx.wait();
-  return { hash: receipt?.hash ?? tx.hash, receipt };
+  return sendCall(
+    provider,
+    kind === "deposit" ? ETH_CHAIN_ID : HEMI_CHAIN_ID,
+    kind === "deposit" ? L1_STANDARD_BRIDGE : L2_STANDARD_BRIDGE,
+    bridgeAbi,
+    "bridgeETHTo",
+    [dest, BRIDGE_MIN_GAS, "0x"],
+    amount,
+  );
 }
 
-export async function depositEth(privateKey: string, to: string, amount: bigint): Promise<string> {
-  const sent = await sendBridge("deposit", privateKey, to, amount);
+export async function depositEth(to: string, amount: bigint): Promise<string> {
+  const sent = await sendBridge("deposit", to, amount);
   return sent.hash;
 }
 
@@ -324,11 +326,10 @@ export function withdrawalFromReceipt(receipt: TransactionReceipt): { withdrawal
 }
 
 export async function withdrawEth(
-  privateKey: string,
   to: string,
   amount: bigint,
 ): Promise<{ hash: string; withdrawal: WithdrawalFields; withdrawalHash: string; l2Block: number }> {
-  const sent = await sendBridge("withdraw", privateKey, to, amount);
+  const sent = await sendBridge("withdraw", to, amount);
   if (!sent.receipt) throw new Error("The Hemi withdrawal was not mined.");
   const parsed = withdrawalFromReceipt(sent.receipt);
   return {
@@ -486,23 +487,33 @@ export async function prepareWithdrawalProof(tx: WithdrawalFields, output: Outpu
   return { tx: portalTuple(tx), index: output.index, outputRootProof, withdrawalProof: stored.proof };
 }
 
-export async function proveWithdrawal(privateKey: string, tx: WithdrawalFields, output: OutputRef): Promise<string> {
+export async function proveWithdrawal(tx: WithdrawalFields, output: OutputRef): Promise<string> {
   const info = await readEthBridge();
   if (info.portalPaused) throw new Error("The Ethereum portal is paused.");
   const args = await prepareWithdrawalProof(tx, output);
-  const portal = new Contract(OPTIMISM_PORTAL, portalAbi, new Wallet(privateKey, ethProvider()));
-  const sent = await portal.proveWithdrawalTransaction(args.tx, args.index, args.outputRootProof, args.withdrawalProof);
-  const receipt = await sent.wait();
-  return receipt?.hash ?? sent.hash;
+  const sent = await sendCall(
+    ethProvider(),
+    ETH_CHAIN_ID,
+    OPTIMISM_PORTAL,
+    portalAbi,
+    "proveWithdrawalTransaction",
+    [args.tx, args.index, args.outputRootProof, args.withdrawalProof],
+  );
+  return sent.hash;
 }
 
-export async function finalizeWithdrawal(privateKey: string, tx: WithdrawalFields): Promise<string> {
+export async function finalizeWithdrawal(tx: WithdrawalFields): Promise<string> {
   const info = await readEthBridge();
   if (info.portalPaused) throw new Error("The Ethereum portal is paused.");
-  const portal = new Contract(OPTIMISM_PORTAL, portalAbi, new Wallet(privateKey, ethProvider()));
-  const sent = await portal.finalizeWithdrawalTransaction(portalTuple(tx));
-  const receipt = await sent.wait();
-  return receipt?.hash ?? sent.hash;
+  const sent = await sendCall(
+    ethProvider(),
+    ETH_CHAIN_ID,
+    OPTIMISM_PORTAL,
+    portalAbi,
+    "finalizeWithdrawalTransaction",
+    [portalTuple(tx)],
+  );
+  return sent.hash;
 }
 
 export function stageError(stage: WithdrawalStage): string {

@@ -1,6 +1,7 @@
 import { hex } from "@scure/base";
 import { Address, NETWORK, Transaction, p2wpkh } from "@scure/btc-signer";
 import { DUST_SATS, MEMPOOL } from "../chain.ts";
+import { requirePublic, signBitcoin } from "./sessionVault.ts";
 
 export type Utxo = { txid: string; vout: number; value: number };
 
@@ -137,24 +138,37 @@ function paymentScript(publicKey: Uint8Array): Uint8Array {
   return payment.script;
 }
 
+type UnsignedSpend = { tx: Transaction; feeSats: bigint; vsize: number };
+
+/** Worst-case native-segwit witness, so the fee is not short a byte before signing. */
+function placeholderVsize(tx: Transaction, publicKey: Uint8Array): number {
+  const copy = tx.clone();
+  const dummy = new Uint8Array(73);
+  dummy[0] = 0x30;
+  for (let i = 0; i < copy.inputsLength; i += 1) {
+    copy.updateInput(i, { partialSig: [[publicKey, dummy]] }, true);
+  }
+  copy.finalize();
+  return Math.ceil(copy.weight / 4);
+}
+
 /**
- * Build a signed mainnet transaction spending native segwit coins.
- * `payTo` is the first payment output. Optional OP_RETURN follows it.
+ * Unsigned native-segwit spend. `payTo` is output 0, which confirmDeposit expects.
+ * Optional OP_RETURN follows it. The session signer adds the signature.
  */
-export function buildSignedTx(input: {
+function buildUnsignedSpend(input: {
   publicKey: Uint8Array;
-  privateKey: Uint8Array;
   utxos: Utxo[];
   payTo: PaymentOut;
   memo?: Uint8Array;
   changeAddress: string;
   feeRate: number;
-}): BuiltTx {
+}): UnsignedSpend {
   if (input.payTo.amount <= 0n) throw new Error("Amount must be greater than zero.");
   const script = paymentScript(input.publicKey);
   const extras: ExtraOut[] = input.memo ? [{ script: scriptPush(input.memo), amount: 0n }] : [];
   let fee = BigInt(input.feeRate) * guessVsize(2, extras.length + 2);
-  let last: BuiltTx | null = null;
+  let last: UnsignedSpend | null = null;
 
   for (let attempt = 0; attempt < 4; attempt++) {
     const selected: Utxo[] = [];
@@ -202,16 +216,53 @@ export function buildSignedTx(input: {
     tx.addOutputAddress(input.payTo.address, input.payTo.amount, NETWORK);
     for (const extra of extras) tx.addOutput({ script: extra.script, amount: extra.amount });
     if (keepChange) tx.addOutputAddress(input.changeAddress, change, NETWORK);
-    tx.sign(input.privateKey);
-    tx.finalize();
-    const vsize = Math.ceil(tx.weight / 4);
+    const vsize = placeholderVsize(tx, input.publicKey);
     const exact = BigInt(input.feeRate) * BigInt(vsize);
-    last = { hex: tx.hex, txid: tx.id, feeSats: fee, vsize, outputIndex: 0 };
+    last = { tx, feeSats: fee, vsize };
     if (exact === fee || attempt === 3) return last;
     fee = exact;
   }
   if (!last) throw new Error("Could not build the Bitcoin transaction.");
   return last;
+}
+
+/** Unsigned PSBT. Tests and the session signer use this. */
+export function planBtcPsbt(input: {
+  publicKey: Uint8Array;
+  utxos: Utxo[];
+  payTo: PaymentOut;
+  memo?: Uint8Array;
+  changeAddress: string;
+  feeRate: number;
+}): { psbt: Uint8Array; feeSats: bigint; vsize: number } {
+  const planned = buildUnsignedSpend(input);
+  return { psbt: planned.tx.toPSBT(2), feeSats: planned.feeSats, vsize: planned.vsize };
+}
+
+/** Sign with the open session and return the raw transaction. */
+export function spendBitcoin(input: {
+  utxos: Utxo[];
+  payTo: PaymentOut;
+  memo?: Uint8Array;
+  feeRate: number;
+}): BuiltTx {
+  const pubs = requirePublic();
+  const planned = planBtcPsbt({
+    publicKey: pubs.btcPublicKey,
+    utxos: input.utxos,
+    payTo: input.payTo,
+    memo: input.memo,
+    changeAddress: pubs.btcAddress,
+    feeRate: input.feeRate,
+  });
+  const signed = signBitcoin(planned.psbt);
+  return {
+    hex: signed.hex,
+    txid: signed.txid,
+    feeSats: planned.feeSats,
+    vsize: planned.vsize,
+    outputIndex: 0,
+  };
 }
 
 function guessVsize(inputs: number, outputs: number): bigint {

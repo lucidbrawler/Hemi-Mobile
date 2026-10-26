@@ -1,8 +1,10 @@
-import { Contract, Wallet, getAddress } from "ethers";
+import { Contract, getAddress } from "ethers";
 import { formatUnits } from "./format";
-import { HEMIBTC, HEMI_TOKEN, VE_HEMI, VE_HEMI_LENS, VE_HEMI_REWARDS, VUSD } from "../chain";
+import { HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, VE_HEMI, VE_HEMI_LENS, VE_HEMI_REWARDS, VUSD } from "../chain";
+import { sendCall } from "./evmSend.ts";
 import { hemiProvider } from "./hemi";
 import { holdingUsd, legsUsd, type PriceBook } from "./prices";
+import { requirePublic } from "./sessionVault.ts";
 
 /** VeHemi YEAR / 60. Locks round down onto this grid. */
 export const STAKE_EPOCH_SECONDS = 525_960;
@@ -250,15 +252,15 @@ function requireDuration(durationSec: bigint) {
   }
 }
 
-async function requireGas(wallet: Wallet) {
-  const eth = await hemiProvider().getBalance(wallet.address);
+async function requireGas(address: string) {
+  const eth = await hemiProvider().getBalance(address);
   if (eth === 0n) throw new Error("Need Hemi ETH for gas.");
 }
 
-async function mined(tx: { hash: string; wait: () => Promise<{ status?: number; hash?: string } | null> }): Promise<string> {
-  const receipt = await tx.wait();
-  if (receipt?.status === 0) throw new Error("The transaction failed.");
-  return receipt?.hash ?? tx.hash;
+async function hemiCall(address: string, abi: readonly string[], method: string, args: readonly unknown[]): Promise<string> {
+  const sent = await sendCall(hemiProvider(), HEMI_CHAIN_ID, address, abi, method, args);
+  if (sent.receipt?.status === 0) throw new Error("The transaction failed.");
+  return sent.hash;
 }
 
 const EPOCH = BigInt(STAKE_EPOCH_SECONDS);
@@ -282,50 +284,47 @@ async function readLocked(ve: Contract, tokenId: bigint): Promise<{ amount: bigi
 }
 
 export async function lockHemi(
-  privateKey: string,
   amount: bigint,
   durationSec: bigint,
   onPhase?: (phase: "approve" | "lock") => void,
 ): Promise<string> {
   if (amount < STAKE_MIN_HEMI) throw new Error("The minimum lock is 10 HEMI.");
   requireDuration(durationSec);
-  const wallet = new Wallet(privateKey, hemiProvider());
-  await requireGas(wallet);
-  const token = new Contract(HEMI_TOKEN, allowanceAbi, wallet);
-  const allowed = BigInt(await token.allowance(wallet.address, VE_HEMI));
+  const holder = requirePublic().hemiAddress;
+  await requireGas(holder);
+  const token = new Contract(HEMI_TOKEN, allowanceAbi, hemiProvider());
+  const allowed = BigInt(await token.allowance(holder, VE_HEMI));
   if (allowed < amount) {
     onPhase?.("approve");
-    await mined(await token.approve(VE_HEMI, amount));
+    await hemiCall(HEMI_TOKEN, allowanceAbi, "approve", [VE_HEMI, amount]);
   }
   onPhase?.("lock");
-  const ve = new Contract(VE_HEMI, veAbi, wallet);
-  return mined(await ve.createLock(amount, durationSec));
+  return hemiCall(VE_HEMI, veAbi, "createLock", [amount, durationSec]);
 }
 
 /** Add HEMI to a lock that has not ended. The unlock date stays the same. */
 export async function addHemiToLock(
-  privateKey: string,
   tokenId: bigint,
   amount: bigint,
   onPhase?: (phase: "approve" | "add") => void,
 ): Promise<string> {
   if (amount <= 0n) throw new Error("Enter an amount of HEMI.");
-  const wallet = new Wallet(privateKey, hemiProvider());
-  await requireGas(wallet);
-  const ve = new Contract(VE_HEMI, veAbi, wallet);
+  const holder = requirePublic().hemiAddress;
+  await requireGas(holder);
+  const ve = new Contract(VE_HEMI, veAbi, hemiProvider());
   const locked = await readLocked(ve, tokenId);
   const now = await chainNow();
   if (locked.amount <= 0n) throw new Error("This lock is empty.");
   if (locked.end <= now) throw new Error("This lock has ended. Unlock the HEMI instead of adding more.");
-  const token = new Contract(HEMI_TOKEN, allowanceAbi, wallet);
-  const allowed = BigInt(await token.allowance(wallet.address, VE_HEMI));
+  const token = new Contract(HEMI_TOKEN, allowanceAbi, hemiProvider());
+  const allowed = BigInt(await token.allowance(holder, VE_HEMI));
   if (allowed < amount) {
     onPhase?.("approve");
-    await mined(await token.approve(VE_HEMI, amount));
+    await hemiCall(HEMI_TOKEN, allowanceAbi, "approve", [VE_HEMI, amount]);
   }
   onPhase?.("add");
   await ve.increaseAmount.staticCall(tokenId, amount);
-  return mined(await ve.increaseAmount(tokenId, amount));
+  return hemiCall(VE_HEMI, veAbi, "increaseAmount", [tokenId, amount]);
 }
 
 /**
@@ -334,15 +333,14 @@ export async function addHemiToLock(
  * unlock the contract still accepts, 4 years from the chain clock.
  */
 export async function extendHemiLock(
-  privateKey: string,
   tokenId: bigint,
   extend: StakeExtend,
 ): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  await requireGas(wallet);
-  const ve = new Contract(VE_HEMI, veAbi, wallet);
+  const holder = requirePublic().hemiAddress;
+  await requireGas(holder);
+  const ve = new Contract(VE_HEMI, veAbi, hemiProvider());
   const owner = String(await ve.ownerOf(tokenId));
-  if (owner.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("This lock is in another wallet.");
+  if (owner.toLowerCase() !== holder.toLowerCase()) throw new Error("This lock is in another wallet.");
   const locked = await readLocked(ve, tokenId);
   const now = await chainNow();
   if (locked.amount <= 0n) throw new Error("This lock is empty.");
@@ -355,7 +353,7 @@ export async function extendHemiLock(
   if (target > cap) throw new Error("That much time would pass the 4 year limit.");
   const duration = target - now;
   await ve.increaseUnlockTime.staticCall(tokenId, duration);
-  return mined(await ve.increaseUnlockTime(tokenId, duration));
+  return hemiCall(VE_HEMI, veAbi, "increaseUnlockTime", [tokenId, duration]);
 }
 
 async function rewardFloor(settled: number): Promise<number> {
@@ -393,12 +391,12 @@ async function fitClaim(
   return null;
 }
 
-export async function claimStake(privateKey: string, tokenId: bigint): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  await requireGas(wallet);
-  const rewards = new Contract(VE_HEMI_REWARDS, rewardsAbi, wallet);
-  const lens = new Contract(VE_HEMI_LENS, lensAbi, wallet);
-  const quoted = (await lens.claimableByTokenAll(tokenId, wallet.address)) as RewardRow[];
+export async function claimStake(tokenId: bigint): Promise<string> {
+  const holder = requirePublic().hemiAddress;
+  await requireGas(holder);
+  const rewards = new Contract(VE_HEMI_REWARDS, rewardsAbi, hemiProvider());
+  const lens = new Contract(VE_HEMI_LENS, lensAbi, hemiProvider());
+  const quoted = (await lens.claimableByTokenAll(tokenId, holder)) as RewardRow[];
   if (!quoted.some((row) => row.claimable > 0n)) throw new Error("Nothing is ready to claim for this position.");
 
   const settled = Number(await rewards.settledEpoch());
@@ -407,14 +405,14 @@ export async function claimStake(privateKey: string, tokenId: bigint): Promise<s
   let last = "";
   let sent = 0;
   while (from <= settled && sent < 6) {
-    const fitted = await fitClaim(rewards, tokenId, wallet.address, from, Math.min(settled, from + span - 1));
+    const fitted = await fitClaim(rewards, tokenId, holder, from, Math.min(settled, from + span - 1));
     if (fitted == null) {
-      const rows = (await lens.claimableByToken(tokenId, wallet.address, from, from)) as RewardRow[];
+      const rows = (await lens.claimableByToken(tokenId, holder, from, from)) as RewardRow[];
       let moved = false;
       for (const row of rows) {
         if (row.claimable === 0n) continue;
-        await rewards.claimToken.staticCall(tokenId, wallet.address, row.token, from, from);
-        last = await mined(await rewards.claimToken(tokenId, wallet.address, row.token, from, from));
+        await rewards.claimToken.staticCall(tokenId, holder, row.token, from, from);
+        last = await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "claimToken", [tokenId, holder, row.token, from, from]);
         moved = true;
         sent += 1;
       }
@@ -422,9 +420,9 @@ export async function claimStake(privateKey: string, tokenId: bigint): Promise<s
       from += 1;
       continue;
     }
-    const rows = (await lens.claimableByToken(tokenId, wallet.address, from, fitted)) as RewardRow[];
+    const rows = (await lens.claimableByToken(tokenId, holder, from, fitted)) as RewardRow[];
     if (rows.some((row) => row.claimable > 0n)) {
-      last = await mined(await rewards.claimFrom(tokenId, wallet.address, from, fitted, 0));
+      last = await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "claimFrom", [tokenId, holder, from, fitted, 0]);
       sent += 1;
     }
     from = fitted + 1;
@@ -434,14 +432,13 @@ export async function claimStake(privateKey: string, tokenId: bigint): Promise<s
 }
 
 export async function unlockStake(
-  privateKey: string,
   tokenId: bigint,
   onPhase?: (phase: "record" | "unlock") => void,
 ): Promise<string> {
-  const wallet = new Wallet(privateKey, hemiProvider());
-  await requireGas(wallet);
-  const rewards = new Contract(VE_HEMI_REWARDS, rewardsAbi, wallet);
-  const ve = new Contract(VE_HEMI, veAbi, wallet);
+  const holder = requirePublic().hemiAddress;
+  await requireGas(holder);
+  const rewards = new Contract(VE_HEMI_REWARDS, rewardsAbi, hemiProvider());
+  const ve = new Contract(VE_HEMI, veAbi, hemiProvider());
   const bound = String(await rewards.veHemi()).toLowerCase();
   if (bound === VE_HEMI.toLowerCase()) {
     const klass = await rewards.positionClass(tokenId);
@@ -450,10 +447,10 @@ export async function unlockStake(
       onPhase?.("record");
       const ok = Boolean(await rewards.capturePositionClass.staticCall(tokenId));
       if (!ok) throw new Error("This position's reward class cannot be recorded, so it stays locked.");
-      await mined(await rewards.capturePositionClass(tokenId));
+      await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "capturePositionClass", [tokenId]);
     }
   }
   onPhase?.("unlock");
   await ve.withdraw.staticCall(tokenId);
-  return mined(await ve.withdraw(tokenId));
+  return hemiCall(VE_HEMI, veAbi, "withdraw", [tokenId]);
 }

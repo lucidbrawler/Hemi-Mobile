@@ -1,8 +1,13 @@
+import { HDKey } from "@scure/bip32";
+import { mnemonicToSeedSync } from "@scure/bip39";
 import { hex } from "@scure/base";
-import { ZeroHash } from "ethers";
+import { HDNodeWallet, Transaction, ZeroHash } from "ethers";
+import { BTC_PATH, HEMI_CHAIN_ID, HEMI_PATH } from "../src/chain.ts";
 import { passwordMeetsBar } from "../src/lib/password.ts";
 import { assertMnemonic, deriveWallet } from "../src/lib/wallet.ts";
-import { buildSignedTx, memoScriptHex, tunnelMemo } from "../src/lib/btc.ts";
+import { memoScriptHex, planBtcPsbt, tunnelMemo } from "../src/lib/btc.ts";
+import { signBitcoinPhrase, signEvmPhrase } from "../src/lib/phraseSign.ts";
+import { clearSession, exportPhrase, getSessionMnemonic, setSession, signBitcoin } from "../src/lib/sessionVault.ts";
 import { hashOutputRootProof, hashWithdrawal, withdrawalStorageKey } from "../src/lib/ethBridge.ts";
 import { btcToSats, satsToBtc } from "../src/lib/format.ts";
 import { isPopPublication } from "../src/lib/pop.ts";
@@ -39,19 +44,59 @@ if (btcToSats("0.0001") !== 10000n) throw new Error("sats parse");
 if (satsToBtc(10000n) !== "0.0001") throw new Error("sats format");
 if (btcToSats("0.000100001") !== null) throw new Error("too many decimals should fail");
 
-const built = buildSignedTx({
+const seed = mnemonicToSeedSync(phrase);
+const node = HDKey.fromMasterSeed(seed).derive(BTC_PATH);
+if (!node.privateKey) throw new Error("missing bitcoin key");
+let btcSecret = "";
+for (const byte of node.privateKey) btcSecret += byte.toString(16).padStart(2, "0");
+node.privateKey.fill(0);
+seed.fill(0);
+
+const planned = planBtcPsbt({
   publicKey: wallet.btcPublicKey,
-  privateKey: wallet.btcPrivateKey,
   utxos: [{ txid: "11".repeat(32), vout: 0, value: 250_000 }],
   payTo: { address: "1QDhzsteETKuw1M5kWHEjzaAmHSGhpH8zr", amount: 100_000n },
   memo: tunnelMemo(wallet.hemiAddress),
   changeAddress: wallet.btcAddress,
   feeRate: 2,
 });
+const signed = signBitcoinPhrase(phrase, planned.psbt);
 const memoHex = memoScriptHex(wallet.hemiAddress);
-if (!built.hex.includes(memoHex)) throw new Error("signed deposit is missing the OP_RETURN memo");
-if (!/^[0-9a-f]{64}$/.test(built.txid)) throw new Error(`bad txid ${built.txid}`);
-if (built.outputIndex !== 0) throw new Error("vault payment should be vout 0");
+if (!signed.hex.includes(memoHex)) throw new Error("signed deposit is missing the OP_RETURN memo");
+if (!/^[0-9a-f]{64}$/.test(signed.txid)) throw new Error(`bad txid ${signed.txid}`);
+if (signed.hex.toLowerCase().includes(btcSecret)) throw new Error("signed bitcoin transaction contains the private key");
+
+const ethWallet = HDNodeWallet.fromPhrase(phrase, undefined, HEMI_PATH);
+const ethSecret = ethWallet.privateKey.replace(/^0x/i, "").toLowerCase();
+const unsigned = Transaction.from({
+  type: 2,
+  chainId: HEMI_CHAIN_ID,
+  nonce: 3,
+  maxFeePerGas: 20n,
+  maxPriorityFeePerGas: 1n,
+  gasLimit: 21_000n,
+  to: "0x0000000000000000000000000000000000000001",
+  value: 5n,
+});
+unsigned.signature = signEvmPhrase(phrase, unsigned.unsignedSerialized);
+if (unsigned.from !== expectedHemi) throw new Error(`recovered signer ${unsigned.from}`);
+if (unsigned.serialized.toLowerCase().includes(ethSecret)) throw new Error("signed ethereum transaction contains the private key");
+
+setSession(phrase);
+if (getSessionMnemonic() !== "") throw new Error("the session handed the phrase to a caller");
+if (exportPhrase() !== phrase) throw new Error("reveal did not return the saved phrase");
+const viaSession = signBitcoin(planned.psbt);
+if (viaSession.txid !== signed.txid) throw new Error("session signer disagreed with the phrase signer");
+if (viaSession.hex.toLowerCase().includes(btcSecret)) throw new Error("session signature contains the private key");
+clearSession();
+let locked = false;
+try {
+  exportPhrase();
+} catch {
+  locked = true;
+}
+if (!locked) throw new Error("a locked wallet still exported the phrase");
+if (getSessionMnemonic() !== "") throw new Error("a locked wallet leaked the phrase");
 
 const popScript = "6a4c50" + "48454d49" + "11".repeat(40);
 if (!isPopPublication(popScript)) throw new Error("HEMI OP_RETURN should count as a PoP publication");

@@ -26,11 +26,11 @@ Mainnet coins move if you confirm a send or a tunnel. A new wallet starts at zer
 
 The browser and the phone do not store the phrase the same way.
 
-**Browser.** A passkey uses WebAuthn. When the browser returns a PRF secret, the AES key is derived from that secret and is not stored. Otherwise the passkey prompt is the user check and a non-extractable AES key stays in IndexedDB for that site. A password is optional 2FA (at least 8 characters). The locked blob is in `localStorage`. Older wallets saved with a password alone still open, and can add a passkey from the wallet tab.
+**Browser.** A passkey uses WebAuthn. When the browser returns a PRF secret, the AES key is derived from that secret and is not stored. Otherwise the passkey prompt is the user check and a non-extractable AES key stays in IndexedDB for that site. A password is optional 2FA (at least 8 characters). The locked blob is in `localStorage`.
 
 **Phone.** The locked blob is in Android encrypted preferences, under a keystore master key. The first launch copies any wallet out of WebView storage and deletes that copy. Android backup is off. A new password has to clear 4 of these 5 checks: 8 characters, lowercase, uppercase, a number, and a symbol. An older shorter password still unlocks.
 
-The phone passkey is an Android Keystore AES key. It never enters JavaScript. The system asks for a fingerprint or face every time the phrase is read. A device PIN is not accepted. Enrolling another fingerprint does not delete the key. A passkey saved on an older build still opens with a fingerprint or face, and that unlock wraps the phrase under a new key. The first unlock after this update can ask twice.
+The phone passkey is an Android Keystore AES key. It never enters JavaScript. The system asks for a fingerprint or face every time the phrase is read. A device PIN is not accepted. Enrolling another fingerprint does not delete the key.
 
 While the wallet is open, the phrase and the private keys stay in a module (`src/lib/sessionVault.ts`). The screens only receive the two addresses. The wallet locks when the app goes to the background, and after 5 minutes with no taps. The phone window uses `FLAG_SECURE`, so screenshots and the app-switcher preview are blocked there. The browser cannot make that same guarantee.
 
@@ -40,7 +40,7 @@ There is no auto-upload and no cloud restore. The written phrase is the backup. 
 
 This is an unofficial demo, not a Hemi Labs product. The Android id stays `app.demo.hemibtcwallet` so an install that already has a wallet keeps it. The APK in this repo is signed with the Android debug key and is for sideloading, not the Play Store. A store build would need its own release key. That key is not in this tree.
 
-`npm run selfcheck` checks derivation, the tunnel memo, the withdrawal hashes, the password bar, the phone vault copy plan, a password round trip, pool math, and stake weight. It does not broadcast a transaction.
+`npm run selfcheck` checks derivation, the tunnel memo, the withdrawal hashes, the password bar, the phone vault copy plan, a password round trip, pool math, stake weight, and that a signed transaction does not contain the private key. It does not broadcast a transaction.
 
 ## Run it in the browser
 
@@ -56,7 +56,7 @@ Open http://localhost:5173 . Create a wallet, then use Wallet, Tunnel, and Activ
 npm run selfcheck
 ```
 
-Checks the well-known “abandon …” phrase, the tunnel memo, the withdrawal hashes, and the review checks in `scripts/reviewcheck.ts`.
+Checks the well-known “abandon …” phrase, the tunnel memo, the withdrawal hashes, the signer isolation, and the review checks in `scripts/reviewcheck.ts`.
 
 ## Demo APK
 
@@ -67,7 +67,7 @@ JAVA_HOME="$HOME/.local/jdks/jdk-21.0.12.1+1" npm run android:apk
 cp android/app/build/outputs/apk/debug/app-debug.apk hemi-btc-demo.apk
 ```
 
-`npm run android:apk` writes `android/app/build/outputs/apk/debug/app-debug.apk`. The sideload copy from this build is `hemi-btc-demo.apk` (gitignored). Debug builds are signed with the Android debug key and are for sideloading, not the Play Store.
+`npm run android:apk` writes `android/app/build/outputs/apk/debug/app-debug.apk`. The sideload copy from this build is `hemi-btc-demo.apk` (gitignored). Debug builds are signed with the Android debug key and are for sideloading, not the Play Store. The current sideload build is 1.22. The GitHub release attaches `hemi-btc-1.22.apk`.
 
 ## References
 
