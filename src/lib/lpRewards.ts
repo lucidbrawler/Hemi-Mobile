@@ -1,8 +1,8 @@
 import { Contract, Interface, getAddress } from "ethers";
 import { HEMI_CHAIN_ID } from "../chain";
 import { broadcastEvm } from "./evmSend.ts";
-import { formatUnits } from "./format";
-import { legsUsd, walletValueUsd, type PriceBook, type ValuedHolding } from "./prices";
+import { formatAmount, formatUnits } from "./format";
+import { legsUsd, sumLegsUsd, walletValueUsd, type PriceBook, type ValuedHolding } from "./prices";
 import { hemiProvider } from "./hemi";
 import { requirePublic } from "./sessionVault.ts";
 import {
@@ -356,17 +356,35 @@ function encodeWithdraw(
   return positionIface.encodeFunctionData("multicall", [calls]);
 }
 
-export function formatFee(amount: bigint, asset: PoolAsset): string | null {
+/** Exact held or fee text when the row shortens a long fraction. */
+export function positionExactLine(position: LpPosition, kind: "size" | "fees"): string | undefined {
+  if (kind === "size") {
+    if (position.liquidity === 0n || !position.amountsKnown) return undefined;
+  } else if (!position.feesKnown) return undefined;
+  const exact = sidedText(position, kind, false);
+  const shown = sidedText(position, kind, true);
+  if (!exact || exact === shown) return undefined;
+  return kind === "size" ? `Held ${exact}` : exact;
+}
+
+function tokenText(amount: bigint, asset: PoolAsset, pretty: boolean): string | null {
   if (amount <= 0n) return null;
   const spec = assetSpec(asset);
-  return `${formatUnits(amount, spec.decimals)} ${spec.label}`;
+  const text = pretty ? formatAmount(amount, spec.decimals) : formatUnits(amount, spec.decimals);
+  return `${text} ${spec.label}`;
+}
+
+function sidedText(position: LpPosition, kind: "size" | "fees", pretty: boolean): string | null {
+  const left = kind === "size" ? position.amount0 : position.fee0;
+  const right = kind === "size" ? position.amount1 : position.fee1;
+  const parts = [tokenText(left, position.token0, pretty), tokenText(right, position.token1, pretty)]
+    .filter((part): part is string => part != null);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function positionFeeLine(position: LpPosition): string {
   if (!position.feesKnown) return "Could not read";
-  const parts = [formatFee(position.fee0, position.token0), formatFee(position.fee1, position.token1)]
-    .filter((part): part is string => part != null);
-  return parts.length > 0 ? parts.join(" · ") : "None yet";
+  return sidedText(position, "fees", true) ?? "None yet";
 }
 
 /**
@@ -385,6 +403,30 @@ export function poolsValueUsd(book: PriceBook | null, positions: readonly LpPosi
     holdings.push({ amount: position.amount1, decimals: right.decimals, token: right.address });
   }
   return walletValueUsd(book, holdings);
+}
+
+/** Dollar amount of the held tokens, or of the trading-fee rewards. */
+export function positionUsdAmount(position: LpPosition, book: PriceBook | null, kind: "size" | "fees"): number | null {
+  if (kind === "size") {
+    if (position.liquidity === 0n) return 0;
+    if (!position.amountsKnown) return null;
+  } else if (!position.feesKnown) return null;
+  const spec0 = assetSpec(position.token0);
+  const spec1 = assetSpec(position.token1);
+  return sumLegsUsd(book, [
+    {
+      amount: kind === "size" ? position.amount0 : position.fee0,
+      decimals: spec0.decimals,
+      address: spec0.address,
+      label: spec0.label,
+    },
+    {
+      amount: kind === "size" ? position.amount1 : position.fee1,
+      decimals: spec1.decimals,
+      address: spec1.address,
+      label: spec1.label,
+    },
+  ]);
 }
 
 /** Dollar value of the held tokens, or of the trading-fee rewards. */
@@ -413,7 +455,6 @@ export function positionUsdLine(position: LpPosition, book: PriceBook | null, ki
 export function positionSizeLine(position: LpPosition): string {
   if (position.liquidity === 0n) return "No liquidity left";
   if (!position.amountsKnown) return "Position size unavailable";
-  const parts = [formatFee(position.amount0, position.token0), formatFee(position.amount1, position.token1)]
-    .filter((part): part is string => part != null);
-  return parts.length > 0 ? `Held ${parts.join(" · ")}` : "Held amount is too small to show";
+  const parts = sidedText(position, "size", true);
+  return parts ? `Held ${parts}` : "Held amount is too small to show";
 }

@@ -4,6 +4,8 @@ import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import vusdIcon from "../assets/vusd.svg";
 import vetroIcon from "../assets/vetro.svg";
+import usdtIcon from "../assets/usdt.svg";
+import usdceIcon from "../assets/usdce.svg";
 import wbtcIcon from "../assets/wbtc.svg";
 import { formatUnits, parseUnits } from "../lib/format";
 import { messageOf } from "../lib/errors";
@@ -41,6 +43,8 @@ const ICONS: Record<PoolAsset, string> = {
   hemibtc: hemiBtcIcon,
   vetro: vetroIcon,
   wbtc: wbtcIcon,
+  usdt: usdtIcon,
+  usdce: usdceIcon,
 };
 
 const SHARES = [25, 50, 75, 100] as const;
@@ -496,7 +500,9 @@ function freeOf(id: PoolAsset, balances: ReturnType<typeof useWallet>["balances"
       : id === "vusd" ? balances.vusdWei
         : id === "vetro" ? balances.vetroWei
           : id === "wbtc" ? balances.wbtcSats
-            : balances.hemiSats;
+            : id === "usdt" ? balances.usdtRaw
+              : id === "usdce" ? balances.usdceRaw
+                : balances.hemiSats;
   if (balance == null) return null;
   if (id !== "eth") return balance;
   return balance > ETH_GAS_RESERVE ? balance - ETH_GAS_RESERVE : 0n;

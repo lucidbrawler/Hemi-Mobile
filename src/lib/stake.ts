@@ -1,5 +1,5 @@
 import { Contract, getAddress } from "ethers";
-import { formatUnits } from "./format";
+import { formatAmount } from "./format";
 import { HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, VE_HEMI, VE_HEMI_LENS, VE_HEMI_REWARDS, VUSD } from "../chain";
 import { sendCall } from "./evmSend.ts";
 import { hemiProvider } from "./hemi";
@@ -92,7 +92,7 @@ type RewardRow = {
 export function stakeRewardLine(position: StakePosition): string {
   if (position.rewards == null) return "Could not read";
   if (position.rewards.length === 0) return "None yet";
-  return position.rewards.map((reward) => `${formatUnits(reward.amount, reward.decimals)} ${reward.symbol}`).join(" · ");
+  return position.rewards.map((reward) => `${formatAmount(reward.amount, reward.decimals)} ${reward.symbol}`).join(" · ");
 }
 
 export function stakeRewardTokens(positions: readonly StakePosition[] | null): string[] {

@@ -6,17 +6,17 @@ import hemiEthIcon from "../assets/hemieth.svg";
 import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import usdtIcon from "../assets/usdt.svg";
+import usdceIcon from "../assets/usdce.svg";
 import vetroIcon from "../assets/vetro.svg";
 import vusdIcon from "../assets/vusd.svg";
 import wbtcIcon from "../assets/wbtc.svg";
-import { ETH_EXPLORER, HEMIBTC, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
+import { ETH_CHAIN_ID, ETH_EXPLORER, ETH_RPC, HEMIBTC, HEMI_CHAIN_ID, HEMI_RPC, HEMI_TOKEN, MEMPOOL, USDC_E, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
 import { quoteBtcSendFee } from "../lib/btc";
 import { quoteEthereumFee } from "../lib/ethBridge";
-import { formatLockRemain, formatUnits, formatUsd, formatWhen, parseUnits, satsToBtc, shortAddr } from "../lib/format";
+import { formatAmount, formatLockRemain, formatUnits, formatUsd, formatWhen, groupAddress, parseUnits, shortAddr } from "../lib/format";
 import { btcAddressUrl, hemiAddressUrl, quoteHemiNativeFee, quoteHemiTokenFee } from "../lib/hemi";
 import { messageOf } from "../lib/errors";
-import { loadLpRewards, poolsValueUsd, positionFeeLine, positionSizeLine, positionUsdLine, type LpPosition, type LpRewardSnapshot } from "../lib/lpRewards";
-import { poolById } from "../lib/pool";
+import { loadLpRewards, poolsValueUsd, positionExactLine, positionFeeLine, positionSizeLine, positionUsdLine, type LpPosition, type LpRewardSnapshot } from "../lib/lpRewards";
 import { WETH, holdingUsd, usdToSats, walletValueUsd, type PriceBook, type ValuedHolding } from "../lib/prices";
 import { readStake, stakeExtensions, stakeLockedUsd, stakeRewardLine, stakeRewardTokens, stakeRewardsUsd, type StakePosition } from "../lib/stake";
 import { nativeShell } from "../lib/devicePasskey";
@@ -24,15 +24,18 @@ import { NATIVE_PASSWORD_ERROR, passwordMeetsBar } from "../lib/password";
 import { exportPhrase } from "../lib/sessionVault";
 import { useWallet } from "../state";
 import { PasswordRules } from "./PasswordRules";
-import { MerklOnPosition, useMerklRewards } from "./MerklPosition";
+import { PositionMerkl, RewardViewToggle, offerMerklClaim, positionPoolAddress, useMerklRewards, type RewardView } from "./MerklPosition";
+import { PositionRewardBar } from "./RewardMeter";
 import { PoolSheet } from "./PoolSheet";
 import { PositionSheet } from "./PositionSheet";
 import { StakeSheet, type StakeFocus } from "./StakeSheet";
 import { SwapSheet } from "./SwapSheet";
 import { usePrices } from "./usePrices";
 
-type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "stake-rewards" | "pool" | "rewards" | "position" | "phrase" | "passkey" | "2fa";
-type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc" | "usdt";
+type Sheet = null | "receive" | "receive-hemi" | "send-btc" | "send-l1-eth" | "token" | "swap" | "stake" | "stake-rewards" | "pool" | "rewards" | "position" | "settings" | "phrase" | "passkey" | "2fa";
+type Panel = "stake" | "pools";
+type HeroPart = { id: "available" | "staked" | "pools"; label: string; value: string };
+type HemiAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc" | "usdt" | "usdce";
 
 const EMPTY_KEY = "hemi-show-empty";
 
@@ -79,31 +82,36 @@ function portfolioHero(input: {
   gap: string | null;
   stakedUsd: number | null;
   pooledUsd: number | null;
-}): { amount: string; line: string; note: string | null } {
+}): { amount: string; line: string; note: string | null; parts: HeroPart[] } {
   const { usd, loading, asBtc, book, extrasLoading, gap, stakedUsd, pooledUsd } = input;
+  const parts: HeroPart[] = [
+    { id: "available", label: "Available", value: usd == null ? "—" : formatUsd(usd) },
+    { id: "staked", label: "Staked", value: stakedUsd == null ? "…" : formatUsd(stakedUsd) },
+    { id: "pools", label: "In pools", value: pooledUsd == null ? "…" : formatUsd(pooledUsd) },
+  ];
   if (usd == null) {
-    return { amount: "—", line: loading ? "—" : "Price unavailable", note: null };
+    return { amount: "—", line: loading ? "—" : "Price unavailable", note: null, parts };
   }
-  const btcLine = asBtc == null ? "Bitcoin price unavailable" : `≈ ${satsToBtc(asBtc)} BTC`;
-  if (extrasLoading) {
-    return { amount: formatUsd(usd), line: btcLine, note: "Checking stake and pools…" };
-  }
-  if (gap) {
-    return { amount: formatUsd(usd), line: btcLine, note: gap };
-  }
-  if (stakedUsd == null || pooledUsd == null) {
-    if (book == null) return { amount: formatUsd(usd), line: btcLine, note: "Checking stake and pools…" };
-    return { amount: "—", line: "Price unavailable", note: null };
-  }
-  if (stakedUsd === 0 && pooledUsd === 0) {
-    return { amount: formatUsd(usd), line: btcLine, note: null };
+  const btcLine = asBtc == null ? "Bitcoin price unavailable" : `≈ ${formatAmount(asBtc, 8)} BTC`;
+  const waiting = extrasLoading || stakedUsd == null || pooledUsd == null;
+  if (waiting) {
+    if (!extrasLoading && !gap && book == null) {
+      return { amount: "—", line: "Price unavailable", note: null, parts };
+    }
+    return {
+      amount: formatUsd(usd),
+      line: btcLine,
+      note: extrasLoading ? "Checking stake and pools…" : gap,
+      parts,
+    };
   }
   const total = usd + stakedUsd + pooledUsd;
   const totalSats = usdToSats(total, book?.btc ?? null);
   return {
     amount: formatUsd(total),
-    line: totalSats == null ? "Bitcoin price unavailable" : `≈ ${satsToBtc(totalSats)} BTC`,
-    note: `Available ${formatUsd(usd)} · Staked ${formatUsd(stakedUsd)} · In pools ${formatUsd(pooledUsd)}`,
+    line: totalSats == null ? "Bitcoin price unavailable" : `≈ ${formatAmount(totalSats, 8)} BTC`,
+    note: null,
+    parts,
   };
 }
 
@@ -127,6 +135,7 @@ export function Home() {
   const [stakeError, setStakeError] = useState<string | null>(null);
   const [lpSnapshot, setLpSnapshot] = useState<LpRewardSnapshot | null>(null);
   const [lpError, setLpError] = useState<string | null>(null);
+  const [panel, setPanel] = useState<Panel | null>(null);
   const [showEmpty, setShowEmpty] = useState(() => {
     try {
       return localStorage.getItem(EMPTY_KEY) === "1";
@@ -163,6 +172,9 @@ export function Home() {
   function openStake(focus: StakeFocus | null) {
     setStakeFocus(focus);
     setSheet(focus ? "stake-rewards" : "stake");
+  }
+  function togglePanel(next: Panel) {
+    setPanel((current) => current === next ? null : next);
   }
   function openToken(asset: HemiAsset, mode: "send" | "receive") {
     setTokenAsset(asset);
@@ -207,6 +219,7 @@ export function Home() {
     { amount: w.balances.vetroWei, decimals: 18, token: VETRO_USD },
     { amount: w.balances.wbtcSats, decimals: 8, token: WBTC },
     { amount: w.balances.usdtRaw, decimals: 6, token: USDT },
+    { amount: w.balances.usdceRaw, decimals: 6, token: USDC_E },
   ];
   const usd = walletValueUsd(book, holdings);
   const loading = usd == null && (book == null || holdings.some((holding) => holding.amount == null));
@@ -250,7 +263,7 @@ export function Home() {
       asset: "hemi",
       icon: hemiIcon,
       ticker: w.balances.hemiTokenSymbol,
-      detail: `ERC-20 · ${w.balances.hemiTokenDecimals} decimals · ${shortAddr(HEMI_TOKEN, 6, 4)}`,
+      detail: `On Hemi · ${shortAddr(HEMI_TOKEN, 6, 4)}`,
       raw: w.balances.hemiTokenWei,
       decimals: w.balances.hemiTokenDecimals,
       unit: w.balances.hemiTokenSymbol,
@@ -260,7 +273,7 @@ export function Home() {
       asset: "vusd",
       icon: vusdIcon,
       ticker: w.balances.vusdSymbol,
-      detail: `Stablecoin · ${w.balances.vusdDecimals} decimals · ${shortAddr(VUSD, 6, 4)}`,
+      detail: `Stablecoin · ${shortAddr(VUSD, 6, 4)}`,
       raw: w.balances.vusdWei,
       decimals: w.balances.vusdDecimals,
       unit: w.balances.vusdSymbol,
@@ -270,7 +283,7 @@ export function Home() {
       asset: "hemibtc",
       icon: hemiBtcIcon,
       ticker: w.balances.symbol,
-      detail: `ERC-20 · ${w.balances.decimals} decimals · ${shortAddr(HEMIBTC, 6, 4)}`,
+      detail: `On Hemi · ${shortAddr(HEMIBTC, 6, 4)}`,
       raw: hemi,
       decimals: w.balances.decimals,
       unit: w.balances.symbol,
@@ -280,7 +293,7 @@ export function Home() {
       asset: "vetro",
       icon: vetroIcon,
       ticker: "Vetro",
-      detail: `Vetro USD · 18 decimals · ${shortAddr(VETRO_USD, 6, 4)}`,
+      detail: `Vetro USD · ${shortAddr(VETRO_USD, 6, 4)}`,
       raw: w.balances.vetroWei,
       decimals: 18,
       unit: "Vetro",
@@ -290,7 +303,7 @@ export function Home() {
       asset: "wbtc",
       icon: wbtcIcon,
       ticker: "WBTC",
-      detail: `Wrapped BTC · 8 decimals · ${shortAddr(WBTC, 6, 4)}`,
+      detail: `Wrapped BTC · ${shortAddr(WBTC, 6, 4)}`,
       raw: w.balances.wbtcSats,
       decimals: 8,
       unit: "WBTC",
@@ -300,11 +313,21 @@ export function Home() {
       asset: "usdt",
       icon: usdtIcon,
       ticker: "USDT",
-      detail: `Stablecoin · 6 decimals · ${shortAddr(USDT, 6, 4)}`,
+      detail: `Stablecoin · ${shortAddr(USDT, 6, 4)}`,
       raw: w.balances.usdtRaw,
       decimals: 6,
       unit: "USDT",
       token: USDT,
+    },
+    {
+      asset: "usdce",
+      icon: usdceIcon,
+      ticker: "USDC.e",
+      detail: `Bridged USDC · ${shortAddr(USDC_E, 6, 4)}`,
+      raw: w.balances.usdceRaw,
+      decimals: 6,
+      unit: "USDC.e",
+      token: USDC_E,
     },
   ]);
   const anyHeld = hemiRows.some((row) => row.raw != null && row.raw > 0n);
@@ -314,6 +337,12 @@ export function Home() {
   return (
     <div>
       <section className="hero">
+        <div className="hero-bar">
+          <CopyChip address={wallet.hemiAddress} />
+          <button className="gear" type="button" aria-label="Settings" onClick={() => setSheet("settings")}>
+            <GearIcon />
+          </button>
+        </div>
         <div className="kicker">
           <span>Total</span>
           <button className="ghost" type="button" onClick={() => { void w.refresh(); setLpReload((value) => value + 1); setStakeReload((value) => value + 1); }} disabled={w.refreshing}>
@@ -322,15 +351,61 @@ export function Home() {
         </div>
         <div className="balance">{hero.amount}</div>
         <div className="sub">{hero.line}</div>
+        <div className="hero-parts">
+            {hero.parts.map((part) => {
+              if (part.id === "available") {
+                return (
+                  <div key={part.id}>
+                    <span>{part.label}</span>
+                    <b>{part.value}</b>
+                  </div>
+                );
+              }
+              const open = panel === (part.id === "staked" ? "stake" : "pools");
+              return (
+                <button
+                  key={part.id}
+                  type="button"
+                  className={open ? "on" : ""}
+                  aria-expanded={open}
+                  onClick={() => togglePanel(part.id === "staked" ? "stake" : "pools")}
+                >
+                  <span>{part.label}</span>
+                  <b>{part.value}</b>
+                </button>
+              );
+            })}
+        </div>
         {hero.note && <div className="sub">{hero.note}</div>}
-        <div className="meta">{w.walletName ? `${w.walletName} · ` : ""}Hemi mainnet · chain 43111 · Bitcoin and Ethereum</div>
       </section>
+
+      {panel === "stake" && (
+        <StakeCard
+          positions={stakePositions}
+          error={stakeError}
+          onStake={() => openStake(null)}
+          onRewards={() => { setStakeFocus(null); setSheet("stake-rewards"); }}
+          onManage={(tokenId, action) => openStake({ tokenId, action })}
+        />
+      )}
+      {panel === "pools" && (
+        <LiquidityCard
+          owner={wallet.hemiAddress}
+          snapshot={lpSnapshot}
+          error={lpError}
+          reloadKey={lpReload}
+          onAdd={() => setSheet("pool")}
+          onRewards={() => setSheet("rewards")}
+          onOpen={openPosition}
+        />
+      )}
 
       <AssetRow
         icon={btcIcon}
         ticker="BTC"
         detail={`Native · ${shortAddr(wallet.btcAddress, 10, 6)}`}
-        amount={btc == null ? "—" : satsToBtc(btc)}
+        amount={btc == null ? "—" : formatAmount(btc, 8)}
+        exact={btc == null ? undefined : formatUnits(btc, 8)}
         unit="BTC"
         usd={holdingUsd(book, btc, 8, "btc")}
         onClick={() => setSheet("send-btc")}
@@ -339,76 +414,33 @@ export function Home() {
         icon={ethIcon}
         ticker="ETH"
         detail={`Native · On Ethereum · ${shortAddr(wallet.hemiAddress, 10, 6)}`}
-        amount={w.balances.l1EthWei == null ? "—" : formatUnits(w.balances.l1EthWei, 18)}
+        amount={w.balances.l1EthWei == null ? "—" : formatAmount(w.balances.l1EthWei, 18)}
+        exact={w.balances.l1EthWei == null ? undefined : formatUnits(w.balances.l1EthWei, 18)}
         unit="ETH"
         usd={holdingUsd(book, w.balances.l1EthWei, 18, WETH)}
         onClick={() => setSheet("send-l1-eth")}
       />
 
       <section className="card hemi-wallet">
-        <div className="kicker"><span>Hemi wallet</span></div>
-        <p className="hint">
-          HEMI, VUSD, Vetro, WBTC, USDT, ETH, and bitcoin you tunnel as {w.balances.symbol} live on this Hemi address.
-        </p>
-        <CopyAddress address={wallet.hemiAddress} />
+        <div className="kicker"><span>Hemi</span></div>
         {visibleRows.map((row) => (
           <Holding
             key={row.asset}
             icon={row.icon}
             ticker={row.ticker}
             detail={row.detail}
-            amount={row.raw == null ? "—" : formatUnits(row.raw, row.decimals)}
+            amount={row.raw == null ? "—" : formatAmount(row.raw, row.decimals)}
+            exact={row.raw == null ? undefined : formatUnits(row.raw, row.decimals)}
             unit={row.unit}
             usd={holdingUsd(book, row.raw, row.decimals, row.token)}
             onClick={() => openToken(row.asset, "send")}
           />
         ))}
-        <div className="actions">
-          <button className="ghost" type="button" onClick={() => openStake(null)}>Stake HEMI</button>
-          <button className="ghost" type="button" onClick={() => setSheet("pool")}>Add liquidity</button>
-          {anyHeld && hasEmpty && (
+        {anyHeld && hasEmpty && (
+          <div className="actions">
             <button className="ghost" type="button" onClick={toggleEmpty}>{showEmpty ? "Hide empty" : "Show empty"}</button>
-          )}
-        </div>
-      </section>
-
-      <LiquidityCard
-        owner={wallet.hemiAddress}
-        snapshot={lpSnapshot}
-        error={lpError}
-        reloadKey={lpReload}
-        onRewards={() => setSheet("rewards")}
-        onOpen={openPosition}
-      />
-
-      <StakeCard
-        positions={stakePositions}
-        error={stakeError}
-        onRewards={() => { setStakeFocus(null); setSheet("stake-rewards"); }}
-        onManage={(tokenId, action) => openStake({ tokenId, action })}
-      />
-
-      <section className="card secure">
-        <div className="kicker"><span>Unlock</span></div>
-        <b>{w.auth.require2fa ? "Password + passkey" : w.auth.hasPasskey ? "Passkey" : "Password"}</b>
-        <p className="fine">
-          {w.auth.require2fa
-            ? "Every login asks for the password, then the passkey."
-            : w.auth.hasPasskey
-              ? "The passkey opens this wallet. Add a password if you want a second factor."
-              : "A password is saved. Enable a passkey to make that the unlock, and keep the password as 2FA if you want both."}
-        </p>
-        <p className="fine">The wallet locks when you leave the app, and after 5 minutes with no taps. Screenshots are blocked on the phone.</p>
-        {w.auth.hasPasskey && !w.auth.require2fa && (
-          <button className="ghost" type="button" onClick={() => setSheet("2fa")}>Add password 2FA</button>
+          </div>
         )}
-        {!w.auth.hasPasskey && w.passkeyReady && (
-          <button className="btn primary" type="button" onClick={() => setSheet("passkey")}>Enable passkey</button>
-        )}
-        <div className="actions">
-          <button className="ghost" type="button" onClick={() => setSheet("phrase")}>Phrase</button>
-          <button className="ghost" type="button" onClick={w.lock}>Lock</button>
-        </div>
       </section>
 
       <div className="dock-spacer" aria-hidden="true" />
@@ -476,9 +508,17 @@ export function Home() {
       {sheet === "position" && managed && (
         <PositionSheet position={managed} initialMode={managedMode} onClose={closePosition} />
       )}
-      {sheet === "phrase" && <Phrase onClose={() => setSheet(null)} />}
-      {sheet === "passkey" && <EnablePasskey onClose={() => setSheet(null)} />}
-      {sheet === "2fa" && <Enable2fa onClose={() => setSheet(null)} />}
+      {sheet === "settings" && (
+        <SettingsSheet
+          onClose={() => setSheet(null)}
+          onPhrase={() => setSheet("phrase")}
+          onPasskey={() => setSheet("passkey")}
+          on2fa={() => setSheet("2fa")}
+        />
+      )}
+      {sheet === "phrase" && <Phrase onClose={() => setSheet("settings")} />}
+      {sheet === "passkey" && <EnablePasskey onClose={() => setSheet("settings")} />}
+      {sheet === "2fa" && <Enable2fa onClose={() => setSheet("settings")} />}
     </div>
   );
 }
@@ -500,7 +540,125 @@ async function writeClipboard(value: string) {
   }
 }
 
-function CopyAddress({ address }: { address: string }) {
+function CopyChip({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="addr-chip"
+      type="button"
+      onClick={() => {
+        void writeClipboard(address).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1400);
+        }).catch(() => setCopied(false));
+      }}
+    >
+      {shortAddr(address, 6, 4)}
+      <small>{copied ? "Copied" : "Copy"}</small>
+    </button>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.31.6.22l2.39-.96c.51.4 1.05.71 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+      />
+    </svg>
+  );
+}
+
+function SettingsSheet({
+  onClose,
+  onPhrase,
+  onPasskey,
+  on2fa,
+}: {
+  onClose: () => void;
+  onPhrase: () => void;
+  onPasskey: () => void;
+  on2fa: () => void;
+}) {
+  const w = useWallet();
+  const wallet = w.wallet!;
+  const unlock = w.auth.require2fa ? "Password + passkey" : w.auth.hasPasskey ? "Passkey" : "Password";
+
+  return (
+    <div className="sheet-back" onClick={onClose}>
+      <div className="sheet" onClick={(event) => event.stopPropagation()}>
+        <h2>Settings</h2>
+        {w.walletName && <p className="hint">{w.walletName}</p>}
+
+        <section className="set-card">
+          <div className="kicker"><span>Network</span></div>
+          <div className="node">
+            <b>Hemi</b>
+            <small>Chain {HEMI_CHAIN_ID}</small>
+            <span>{endpointLabel(HEMI_RPC)}</span>
+          </div>
+          <div className="node">
+            <b>Ethereum</b>
+            <small>Chain {ETH_CHAIN_ID}</small>
+            <span>{endpointLabel(ETH_RPC)}</span>
+          </div>
+          <div className="node">
+            <b>Bitcoin</b>
+            <small>Mainnet</small>
+            <span>{endpointLabel(MEMPOOL)}</span>
+          </div>
+        </section>
+
+        <section className="set-card">
+          <div className="kicker"><span>Addresses</span></div>
+          <CopyAddress label="Hemi" note="Ethereum uses this address too." address={wallet.hemiAddress} />
+          <CopyAddress label="Bitcoin" address={wallet.btcAddress} />
+        </section>
+
+        <section className="set-card">
+          <div className="kicker"><span>Unlock</span></div>
+          <b className="set-status">{unlock}</b>
+          <p className="fine">
+            {w.auth.require2fa
+              ? "Every login asks for the password, then the passkey."
+              : w.auth.hasPasskey
+                ? "The passkey opens this wallet. Add a password if you want a second factor."
+                : "A password is saved. Enable a passkey to make that the unlock, and keep the password as 2FA if you want both."}
+          </p>
+          <p className="fine">The wallet locks when you leave the app, and after 5 minutes with no taps. Screenshots are blocked on the phone.</p>
+          {w.auth.hasPasskey && !w.auth.require2fa && (
+            <button className="ghost wide" type="button" onClick={on2fa}>Add password 2FA</button>
+          )}
+          {!w.auth.hasPasskey && w.passkeyReady && (
+            <button className="btn primary wide" type="button" onClick={onPasskey}>Enable passkey</button>
+          )}
+          <div className="actions">
+            <button className="ghost" type="button" onClick={onPhrase}>Show phrase</button>
+            <button className="ghost" type="button" onClick={w.lock}>Lock</button>
+          </div>
+        </section>
+
+        <button className="ghost wide set-close" type="button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+function endpointLabel(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+function AddressGroups({ address }: { address: string }) {
+  const chunks = groupAddress(address).split(" ");
+  return (
+    <span className="addr-groups">
+      {chunks.map((chunk, index) => <span key={`${chunk}-${index}`}>{chunk}</span>)}
+    </span>
+  );
+}
+
+function CopyAddress({ label, note, address }: { label: string; note?: string; address: string }) {
   const [copied, setCopied] = useState(false);
 
   return (
@@ -514,8 +672,12 @@ function CopyAddress({ address }: { address: string }) {
         }).catch(() => setCopied(false));
       }}
     >
-      {address}
-      <small>{copied ? "Copied" : "Copy"}</small>
+      <span className="addr-top">
+        <b>{label}</b>
+        <small>{copied ? "Copied" : "Copy"}</small>
+      </span>
+      {note && <span className="addr-note">{note}</span>}
+      <AddressGroups address={address} />
     </button>
   );
 }
@@ -525,6 +687,7 @@ function RowBody({
   ticker,
   detail,
   amount,
+  exact,
   unit,
   usd,
 }: {
@@ -532,9 +695,11 @@ function RowBody({
   ticker: string;
   detail: string;
   amount: string;
+  exact?: string;
   unit: string;
   usd?: string | null;
 }) {
+  const full = exact && exact !== amount ? exact : undefined;
   return (
     <>
       <img className="coin" src={icon} alt="" />
@@ -542,7 +707,7 @@ function RowBody({
         <b>{ticker}</b>
         <small>{detail}</small>
       </span>
-      <span className="amt">
+      <span className="amt" title={full}>
         {amount}
         <span>{unit}</span>
         {usd ? <span className="usd">{usd}</span> : null}
@@ -559,6 +724,7 @@ function AssetRow({
   ticker: string;
   detail: string;
   amount: string;
+  exact?: string;
   unit: string;
   usd?: string | null;
   onClick?: () => void;
@@ -585,6 +751,7 @@ function Holding({
   ticker: string;
   detail: string;
   amount: string;
+  exact?: string;
   unit: string;
   usd?: string | null;
   onClick: () => void;
@@ -607,11 +774,13 @@ function lockStatus(position: StakePosition, nowSec: number): string {
 function StakeCard({
   positions,
   error,
+  onStake,
   onRewards,
   onManage,
 }: {
   positions: StakePosition[] | null;
   error: string | null;
+  onStake: () => void;
   onRewards: () => void;
   onManage: (tokenId: string, action: "add" | "extend") => void;
 }) {
@@ -633,10 +802,10 @@ function StakeCard({
           const rewardUsd = stakeRewardsUsd(position.rewards, book);
           return (
             <div className="lp-pos" key={position.tokenId}>
-              <b>{formatUnits(position.amount, 18)} HEMI</b>
+              <b title={formatUnits(position.amount, 18) === formatAmount(position.amount, 18) ? undefined : formatUnits(position.amount, 18)}>{formatAmount(position.amount, 18)} HEMI</b>
               {lockedUsd && <span className="usd">{lockedUsd}</span>}
               <small>
-                {position.weight == null ? "Weight unavailable" : `${formatUnits(position.weight, 18)} veHEMI`}
+                {position.weight == null ? "Weight unavailable" : `${formatAmount(position.weight, 18)} veHEMI`}
                 {" · "}
                 {lockStatus(position, nowSec)}
               </small>
@@ -655,6 +824,7 @@ function StakeCard({
         })}
       </div>
       <div className="actions">
+        <button className="ghost" type="button" onClick={onStake}>Stake HEMI</button>
         <button className="ghost" type="button" onClick={onRewards}>Rewards</button>
       </div>
     </section>
@@ -666,6 +836,7 @@ function LiquidityCard({
   snapshot,
   error,
   reloadKey,
+  onAdd,
   onRewards,
   onOpen,
 }: {
@@ -673,56 +844,60 @@ function LiquidityCard({
   snapshot: LpRewardSnapshot | null;
   error: string | null;
   reloadKey: number;
+  onAdd: () => void;
   onRewards: () => void;
   onOpen: (position: LpPosition, mode: "add" | "withdraw") => void;
 }) {
   const book = useWallet().prices;
+  const [view, setView] = useState<RewardView>("fees");
 
   const positions = snapshot?.positions ?? [];
   const merkl = useMerklRewards(owner, reloadKey);
   const noGas = useWallet().balances.ethWei === 0n;
-  const poolCounts = new Map<string, number>();
-  for (const position of positions) {
-    const pool = poolById(position.poolId)?.pool.toLowerCase();
-    if (!pool) continue;
-    poolCounts.set(pool, (poolCounts.get(pool) ?? 0) + 1);
-  }
+  const claimedTokens = new Set<string>();
 
   return (
     <section className="card liquidity">
-      <div className="kicker"><span>Liquidity</span></div>
+      <div className="kicker">
+        <span>Liquidity</span>
+        {positions.length > 0 && <RewardViewToggle view={view} onChange={setView} />}
+      </div>
       {snapshot == null && !error && <p className="fine">Loading positions…</p>}
       {error && <p className="fine">{error}</p>}
       {snapshot != null && positions.length === 0 && (
         <p className="fine">No liquidity positions in this wallet yet.</p>
       )}
       {snapshot?.truncated && <p className="fine">Showing the first 30 positions on each venue.</p>}
-      {merkl.data && !merkl.data.rewardsReady && positions.length > 0 && (
-        <p className="fine">Merkl rewards did not load.</p>
-      )}
       <div className="lp-list">
         {positions.map((position) => {
           const sizeUsd = positionUsdLine(position, book, "size");
           const feeUsd = positionUsdLine(position, book, "fees");
-          const pool = poolById(position.poolId)?.pool ?? null;
           const id = `${position.venue}-${position.tokenId}`;
+          const pool = positionPoolAddress(position.poolId);
+          const offerClaim = view === "merkl" && offerMerklClaim(merkl.data, pool, claimedTokens);
           return (
           <div className="lp-pos" key={id}>
-            <b>{position.pairLabel}{position.feeLabel ? ` · ${position.feeLabel}` : ""}</b>
-            <small>{position.venueLabel} · {position.inRange ? "In range" : "Out of range"}</small>
+            <div className="lp-head">
+              <div>
+                <b>{position.pairLabel}{position.feeLabel ? ` · ${position.feeLabel}` : ""}</b>
+                <small>{position.venueLabel}</small>
+              </div>
+              <span className={position.inRange ? "pill ok" : "pill off"}>
+                {position.inRange ? "In range" : "Out of range"}
+              </span>
+            </div>
             <small>{position.lowerPrice} – {position.upperPrice} {position.priceUnit}</small>
-            <small>{positionSizeLine(position)}</small>
+            <small title={positionExactLine(position, "size")}>{positionSizeLine(position)}</small>
             {sizeUsd && <span className="usd">{sizeUsd}</span>}
-            <span>{positionFeeLine(position)}</span>
-            {feeUsd && <span className="usd">{feeUsd}</span>}
-            <MerklOnPosition
-              id={id}
-              pool={pool}
-              inRange={position.inRange}
-              shared={(poolCounts.get(pool?.toLowerCase() ?? "") ?? 0) > 1}
-              merkl={merkl}
-              noGas={noGas}
-            />
+            {view === "fees" ? (
+              <>
+                <PositionRewardBar position={position} book={book} />
+                <span title={positionExactLine(position, "fees")}>{positionFeeLine(position)}</span>
+                {feeUsd && <span className="usd">{feeUsd}</span>}
+              </>
+            ) : (
+              <PositionMerkl pool={pool} merkl={merkl} noGas={noGas} offerClaim={offerClaim} />
+            )}
             <div className="actions">
               <button className="ghost" type="button" onClick={() => onOpen(position, "add")}>Add</button>
               <button className="ghost" type="button" onClick={() => onOpen(position, "withdraw")}>Withdraw</button>
@@ -732,6 +907,7 @@ function LiquidityCard({
         })}
       </div>
       <div className="actions">
+        <button className="ghost" type="button" onClick={onAdd}>Add liquidity</button>
         <button className="ghost" type="button" onClick={onRewards}>Rewards</button>
       </div>
     </section>
@@ -760,7 +936,7 @@ function Receive({ onClose, initial }: { onClose: () => void; initial: "btc" | "
           title: "Receive on Hemi",
           address,
           explorer: hemiAddressUrl(address),
-          note: "This address receives ETH, HEMI, VUSD, Vetro, WBTC, USDT, and hemiBTC on Hemi.",
+          note: "This address receives ETH, HEMI, VUSD, Vetro, WBTC, USDT, USDC.e, and hemiBTC on Hemi.",
         };
 
   return (
@@ -797,7 +973,7 @@ function AddressCard({ address, explorer, note }: { address: string; explorer: s
   return (
     <>
       {qr && <img className="qr" src={qr} alt="" />}
-      <div className="addr">{address}</div>
+      <div className="addr"><AddressGroups address={address} /></div>
       <div className="actions">
         <button
           className="btn primary"
@@ -835,6 +1011,7 @@ function TokenSheet({
     { id: "vusd", label: b.vusdSymbol },
     { id: "vetro", label: "Vetro" },
     { id: "usdt", label: "USDT" },
+    { id: "usdce", label: "USDC.e" },
     { id: "wbtc", label: "WBTC" },
     { id: "hemibtc", label: b.symbol },
   ];
@@ -857,7 +1034,7 @@ function TokenSheet({
       decimals: 18,
       balance: b.ethWei,
       hint: "The network fee comes out of this Hemi ETH balance.",
-      note: "Send Hemi-network ETH to this address. It also receives HEMI, VUSD, Vetro, WBTC, USDT, and hemiBTC.",
+      note: "Send Hemi-network ETH to this address. It also receives HEMI, VUSD, Vetro, WBTC, USDT, USDC.e, and hemiBTC.",
       submit: w.sendEth,
     },
     hemi: {
@@ -907,6 +1084,18 @@ function TokenSheet({
       hint: "USDT moves on Hemi. Gas is paid in Hemi ETH.",
       note: "USDT on Hemi. 6 decimals.",
       submit: w.sendUsdt,
+    },
+    usdce: {
+      title: "Send USDC.e",
+      receiveTitle: "Receive USDC.e",
+      unit: "USDC.e",
+      decimals: 6,
+      balance: b.usdceRaw,
+      gas: b.ethWei,
+      token: USDC_E,
+      hint: "USDC.e moves on Hemi. Gas is paid in Hemi ETH. This is not USDT or VUSD.",
+      note: "Bridged USDC (USDC.e) on Hemi. 6 decimals. This is not USDT or VUSD.",
+      submit: w.sendUsdce,
     },
     wbtc: {
       title: "Send WBTC",

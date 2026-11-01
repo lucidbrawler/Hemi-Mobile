@@ -1,4 +1,5 @@
-import { publicChains, signBitcoinPhrase, signEvmPhrase, type ChainPublic } from "./phraseSign.ts";
+import { publicChains, signBitcoinPhrase, signEvmMessagePhrase, signEvmPhrase, signEvmTypedDataPhrase, type ChainPublic } from "./phraseSign.ts";
+import type { TypedDataDomain, TypedDataField } from "ethers";
 import { assertMnemonic } from "./wallet.ts";
 
 /** Fields the screens can render. The phrase stays in this module. */
@@ -58,6 +59,24 @@ export function signEvm(unsignedSerialized: string): string {
   if (!secret?.mnemonic) throw new Error("Unlock the wallet first.");
   const signature = signEvmPhrase(secret.mnemonic, unsignedSerialized);
   if (!signature) throw new Error("Could not sign the transaction.");
+  return signature;
+}
+
+export function signEvmMessage(message: string | Uint8Array): string {
+  if (!secret?.mnemonic) throw new Error("Unlock the wallet first.");
+  const signature = signEvmMessagePhrase(secret.mnemonic, message);
+  if (!signature) throw new Error("Could not sign the message.");
+  return signature;
+}
+
+export function signEvmTypedData(
+  domain: TypedDataDomain,
+  types: Record<string, TypedDataField[]>,
+  value: Record<string, unknown>,
+): string {
+  if (!secret?.mnemonic) throw new Error("Unlock the wallet first.");
+  const signature = signEvmTypedDataPhrase(secret.mnemonic, domain, types, value);
+  if (!signature) throw new Error("Could not sign the message.");
   return signature;
 }
 

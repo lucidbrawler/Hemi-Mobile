@@ -3,6 +3,7 @@ import hemiEthIcon from "../assets/hemieth.svg";
 import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import usdtIcon from "../assets/usdt.svg";
+import usdceIcon from "../assets/usdce.svg";
 import vetroIcon from "../assets/vetro.svg";
 import vusdIcon from "../assets/vusd.svg";
 import wbtcIcon from "../assets/wbtc.svg";
@@ -26,6 +27,7 @@ const ASSETS: { id: SwapAssetId; label: string; decimals: number; icon: string }
   { id: "vusd", label: "VUSD", decimals: 18, icon: vusdIcon },
   { id: "vetro", label: "Vetro", decimals: 18, icon: vetroIcon },
   { id: "usdt", label: "USDT", decimals: 6, icon: usdtIcon },
+  { id: "usdce", label: "USDC.e", decimals: 6, icon: usdceIcon },
   { id: "hemibtc", label: "hemiBTC", decimals: 8, icon: hemiBtcIcon },
   { id: "wbtc", label: "WBTC", decimals: 8, icon: wbtcIcon },
 ];
@@ -393,6 +395,7 @@ function balanceOf(id: SwapAssetId, balances: ReturnType<typeof useWallet>["bala
   if (id === "vusd") return balances.vusdWei;
   if (id === "vetro") return balances.vetroWei;
   if (id === "usdt") return balances.usdtRaw;
+  if (id === "usdce") return balances.usdceRaw;
   if (id === "wbtc") return balances.wbtcSats;
   return balances.hemiSats;
 }

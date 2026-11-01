@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useWallet } from "./state";
 import { Activity } from "./ui/Activity";
 import { Buddy } from "./ui/Buddy";
+import { BrowserPage, DappHost } from "./ui/DappBrowser";
 import { DoneFlash } from "./ui/DoneFlash";
 import { Gate } from "./ui/Gate";
 import { Home } from "./ui/Home";
@@ -10,7 +11,7 @@ import { Pop } from "./ui/Pop";
 import { Tools } from "./ui/Tools";
 import { Tunnel } from "./ui/Tunnel";
 
-type Place = "wallet" | "activity" | "tools" | "pop" | "tunnel";
+type Place = "wallet" | "activity" | "tools" | "pop" | "tunnel" | "browser";
 
 export function App() {
   const w = useWallet();
@@ -36,7 +37,7 @@ export function App() {
     );
   }
 
-  const toolsOn = place === "tools" || place === "pop" || place === "tunnel";
+  const toolsOn = place === "tools" || place === "pop" || place === "tunnel" || place === "browser";
   const nav = (
     <nav className="nav">
       <button className={place === "wallet" ? "on" : ""} type="button" onClick={() => setPlace("wallet")}>Wallet</button>
@@ -63,11 +64,13 @@ export function App() {
       {place === "wallet" && <Home />}
       {place === "activity" && <Activity />}
       {place === "tools" && <Tools onOpen={setPlace} />}
-      {(place === "pop" || place === "tunnel") && (
+      {(place === "pop" || place === "tunnel" || place === "browser") && (
         <button className="back" type="button" onClick={() => setPlace("tools")}>Tools</button>
       )}
       {place === "pop" && <Pop />}
       {place === "tunnel" && <Tunnel />}
+      {place === "browser" && <BrowserPage />}
+      <DappHost />
     </Stage>
   );
 }

@@ -5,11 +5,12 @@ import hemiEthIcon from "../assets/hemieth.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import vusdIcon from "../assets/vusd.svg";
 import usdtIcon from "../assets/usdt.svg";
+import usdceIcon from "../assets/usdce.svg";
 import vetroIcon from "../assets/vetro.svg";
 import wbtcIcon from "../assets/wbtc.svg";
 import { ETH_EXPLORER } from "../chain";
 import { readEthereumSettled } from "../lib/ethBridge";
-import { formatUnits, formatWhen } from "../lib/format";
+import { formatAmount, formatWhen } from "../lib/format";
 import { messageOf } from "../lib/errors";
 import { readBtcActivity, readHemiActivity, readHemiSettled, type ChainLeg, type ChainRow } from "../lib/hemi";
 import { readPending, writePending, type PendingActivity } from "../lib/pending";
@@ -24,24 +25,10 @@ const ICONS: Record<string, string> = {
   VUSD: vusdIcon,
   Vetro: vetroIcon,
   USDT: usdtIcon,
+  "USDC.e": usdceIcon,
   WBTC: wbtcIcon,
   ETH: hemiEthIcon,
 };
-
-function showLeg(raw: bigint, decimals: number): string {
-  const abs = raw < 0n ? -raw : raw;
-  const text = formatUnits(abs, decimals);
-  const dot = text.indexOf(".");
-  if (dot < 0) return text;
-  const whole = text.slice(0, dot);
-  const frac = text.slice(dot + 1);
-  if (frac.length <= 6) return text;
-  const head = frac.slice(0, 6).replace(/0+$/, "");
-  if (head) return `${whole}.${head}`;
-  const sig = frac.search(/[1-9]/);
-  const tail = frac.slice(0, Math.max(sig + 1, 0) + 3).replace(/0+$/, "");
-  return tail ? `${whole}.${tail}` : whole;
-}
 
 function Coin({ symbol }: { symbol: string }) {
   const src = ICONS[symbol];
@@ -55,9 +42,10 @@ function Amounts({ legs }: { legs: ChainLeg[] }) {
       {legs.map((leg) => {
         const raw = BigInt(leg.amount);
         const inbound = raw >= 0n;
+        const abs = inbound ? raw : -raw;
         return (
           <span className={inbound ? "amt in" : "amt out"} key={`${leg.symbol}-${leg.amount}`}>
-            {inbound ? "+" : "−"}{showLeg(raw, leg.decimals)}
+            {inbound ? "+" : "−"}{formatAmount(abs, leg.decimals)}
             <span>{leg.symbol}</span>
           </span>
         );

@@ -7,7 +7,7 @@ import { HDKey, HARDENED_OFFSET } from "@scure/bip32";
 import { mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { NETWORK, Transaction, p2wpkh } from "@scure/btc-signer";
-import { HDNodeWallet, Transaction as EvmTx } from "ethers";
+import { HDNodeWallet, Transaction as EvmTx, TypedDataEncoder, hashMessage, type TypedDataDomain, type TypedDataField } from "ethers";
 import { BTC_PATH, HEMI_PATH } from "../chain.ts";
 
 export type ChainPublic = {
@@ -78,6 +78,27 @@ export function signEvmPhrase(phrase: string, unsignedSerialized: string): strin
   tx.signature = wallet.signingKey.sign(tx.unsignedHash);
   const signature = tx.signature?.serialized;
   if (!signature) throw new Error("Could not sign the transaction.");
+  return signature;
+}
+
+/** personal_sign. The message is prefixed, then signed. The phrase is not kept here. */
+export function signEvmMessagePhrase(phrase: string, message: string | Uint8Array): string {
+  const wallet = HDNodeWallet.fromPhrase(normalize(phrase), undefined, HEMI_PATH);
+  const signature = wallet.signingKey.sign(hashMessage(message)).serialized;
+  if (!signature) throw new Error("Could not sign the message.");
+  return signature;
+}
+
+/** EIP-712 typed data. The phrase is not kept here. */
+export function signEvmTypedDataPhrase(
+  phrase: string,
+  domain: TypedDataDomain,
+  types: Record<string, TypedDataField[]>,
+  value: Record<string, unknown>,
+): string {
+  const wallet = HDNodeWallet.fromPhrase(normalize(phrase), undefined, HEMI_PATH);
+  const signature = wallet.signingKey.sign(TypedDataEncoder.hash(domain, types, value)).serialized;
+  if (!signature) throw new Error("Could not sign the message.");
   return signature;
 }
 

@@ -1,17 +1,20 @@
 import { useEffect, useState } from "react";
 import { messageOf } from "../lib/errors";
+import { formatUnits, formatUsd } from "../lib/format";
 import { celebrate, pokeBuddy } from "../lib/fx";
 import {
   loadMerklWallet,
   merklAmountLine,
-  merklAmountUsd,
+  merklAmountValue,
   merklClaimable,
   merklForPool,
   merklPayoutCoversMore,
   merklPayoutLine,
   merklTokenAddresses,
+  type MerklAmount,
   type MerklWalletRewards,
 } from "../lib/merkl";
+import { poolById } from "../lib/pool";
 import { useWallet } from "../state";
 import { usePrices } from "./usePrices";
 
@@ -55,101 +58,155 @@ export function useMerklRewards(owner: string, reloadKey = 0) {
   return { data, book, busy, errorFor, error, claim };
 }
 
+export type RewardView = "fees" | "merkl";
+
+/** Fees is the position view. Merkl swaps that same card over to campaign rewards. */
+export function RewardViewToggle({
+  view,
+  onChange,
+}: {
+  view: RewardView;
+  onChange: (view: RewardView) => void;
+}) {
+  return (
+    <div className="seg" role="group" aria-label="Position rewards">
+      <button type="button" className={view === "fees" ? "on" : ""} aria-pressed={view === "fees"} onClick={() => onChange("fees")}>Fees</button>
+      <button type="button" className={view === "merkl" ? "on" : ""} aria-pressed={view === "merkl"} onClick={() => onChange("merkl")}>Merkl</button>
+    </div>
+  );
+}
+
+export function positionPoolAddress(poolId: string): string {
+  return poolById(poolId)?.pool.toLowerCase() ?? "";
+}
+
 /**
- * Live Merkl APR, claimable amount, and claim for one pool.
- * Renders nothing when that pool has no campaign and this wallet has not earned on it.
+ * True for the first open position whose pool can claim a token.
+ * Later positions in this render that share the token stay quiet.
  */
-export function MerklOnPosition({
-  id,
+export function offerMerklClaim(data: MerklWalletRewards | null, pool: string, seen: Set<string>): boolean {
+  if (!data || !pool) return false;
+  const reward = merklForPool(data, pool);
+  if (!reward) return false;
+  const tokens = merklClaimable(reward, data.claims);
+  if (tokens.length === 0 || tokens.every((token) => seen.has(token.address))) return false;
+  for (const token of tokens) seen.add(token.address);
+  return true;
+}
+
+/** Merkl claimable and pending for one open position's pool. */
+export function PositionMerkl({
   pool,
-  inRange,
-  shared,
   merkl,
   noGas,
+  offerClaim,
 }: {
-  id: string;
-  pool: string | null;
-  inRange: boolean;
-  shared: boolean;
+  pool: string;
   merkl: ReturnType<typeof useMerklRewards>;
   noGas: boolean;
+  offerClaim: boolean;
 }) {
   const [sure, setSure] = useState(false);
-  const reward = merklForPool(merkl.data, pool);
-  if (!reward || !merkl.data) return null;
+  const data = merkl.data;
+  const claimId = `merkl-${pool}`;
+  if (!data) return <p className="fine">Loading Merkl rewards…</p>;
+  if (!data.rewardsReady) return <p className="fine">Merkl rewards did not load.</p>;
 
-  const ready = merkl.data.rewardsReady;
-  const claimable = merklAmountLine(reward.tokens, "claimable");
-  const pending = merklAmountLine(reward.tokens, "pending");
-  const claimableUsd = merklAmountUsd(reward.tokens, merkl.book, "claimable");
-  const paying = merklClaimable(reward, merkl.data.claims);
-  const payout = merklPayoutLine(reward, merkl.data.claims);
-  const more = merklPayoutCoversMore(reward, merkl.data.claims);
-  const waitingProof = claimable != null && paying.length === 0;
-  const rewardLabel = reward.reward && reward.reward !== "the reward token" ? reward.reward : "";
-  const canClaim = paying.length > 0 && sure && !noGas && !merkl.busy;
+  const reward = merklForPool(data, pool);
+  const rows = reward?.tokens.filter((token) => token.claimable > 0n || token.pending > 0n) ?? [];
+  if (!reward || rows.length === 0) return <small>No Merkl rewards on this position.</small>;
+
+  const paying = merklClaimable(reward, data.claims);
+  const payout = merklPayoutLine(reward, data.claims) ?? "";
+  const coversMore = merklPayoutCoversMore(reward, data.claims);
+  const waitingProof = rows.some((token) => (
+    token.claimable > 0n
+    && !data.claims.some((claim) => claim.address === token.address && claim.claimable > 0n && claim.proofs != null)
+  ));
+  const canClaim = offerClaim && paying.length > 0 && sure && !noGas && !merkl.busy;
+  const claimableUsd = merklAmountValue(rows, merkl.book, "claimable");
+  const pendingUsd = merklAmountValue(rows, merkl.book, "pending");
+  const track = merklTrack(rows, claimableUsd, pendingUsd);
 
   return (
     <div className="merkl-pos">
-      {reward.apr != null && (
-        <small>
-          Merkl {formatIncentive(reward.apr)}
-          {rewardLabel ? ` · ${rewardLabel}` : ""}
-          {reward.endsAt > 0 ? ` · through ${campaignDate(reward.endsAt)}` : ""}
-        </small>
-      )}
-      {reward.apr == null && rewardLabel && <small>Merkl · {rewardLabel}</small>}
-      {reward.apr != null && !inRange && <small>Pays while the price is in range.</small>}
-      {ready && claimable && <span>Claimable {claimable}</span>}
-      {ready && claimable && claimableUsd && <span className="usd">{claimableUsd}</span>}
-      {ready && !claimable && !pending && reward.apr != null && <span>Claimable none yet</span>}
-      {ready && pending && <small>Pending {pending}. Not claimable until the next Merkl update.</small>}
-      {ready && shared && (claimable != null || pending != null) && (
-        <small>Every position in this pool shows this same balance.</small>
-      )}
-      {ready && waitingProof && <small>The Merkl proof for this reward is not ready.</small>}
-      {ready && paying.length > 0 && payout && (
+      <div className="reward-meter">
+        <div className="reward-track" role="img" aria-label={track.label}>
+          {track.claimable > 0 ? <span className="reward-merkl fill" style={{ width: `${track.claimable}%` }} /> : null}
+          {track.pending > 0 ? <span className="reward-pending fill" style={{ width: `${track.pending}%` }} /> : null}
+        </div>
+        <div className="reward-key">
+          <span><i className="reward-merkl" />Claimable {tokenLine(rows, "claimable")}{usdSuffix(claimableUsd)}</span>
+          <span><i className="reward-pending" />Pending {tokenLine(rows, "pending")}{usdSuffix(pendingUsd)}</span>
+        </div>
+      </div>
+      {waitingProof && <small>The Merkl proof for this reward is not ready.</small>}
+      {offerClaim && paying.length > 0 && payout && (
         <>
           <label className="check">
             <input type="checkbox" checked={sure} onChange={(event) => setSure(event.target.checked)} />
             <span>Broadcast this Merkl claim on mainnet.</span>
           </label>
-          <small>{claimNote(payout, more)}</small>
+          <small>
+            {coversMore
+              ? `A claim sends ${payout} to this wallet. Merkl pays this token's full balance.`
+              : `A claim sends ${payout} to this wallet.`}
+          </small>
           {noGas && <small>This Hemi address has no ETH for gas.</small>}
           <div className="actions">
             <button
-              className="ghost"
+              className={canClaim ? "btn primary" : "ghost"}
               type="button"
               disabled={!canClaim}
-              onClick={() => void merkl.claim(id, paying.map((token) => token.address))}
+              onClick={() => void merkl.claim(claimId, paying.map((token) => token.address))}
             >
-              {merkl.busy ? "Claiming…" : !sure ? "Confirm on mainnet" : noGas ? "Need ETH for gas" : "Claim Merkl"}
+              {merkl.busy ? "Claiming…" : noGas ? "Need ETH for gas" : "Claim Merkl"}
             </button>
           </div>
         </>
       )}
-      {merkl.errorFor === id && merkl.error && <small>{merkl.error}</small>}
+      {merkl.errorFor === claimId && merkl.error && <small>{merkl.error}</small>}
     </div>
   );
 }
 
-function claimNote(payout: string, more: boolean): string {
-  const base = `A claim sends ${payout} to this wallet.`;
-  if (!more) return base;
-  return `${base} Merkl pays each token in one proof, so this includes the same token earned in another pool.`;
+function merklTrack(
+  rows: readonly MerklAmount[],
+  claimableUsd: number | null,
+  pendingUsd: number | null,
+): { claimable: number; pending: number; label: string } {
+  const priced = claimableUsd != null && pendingUsd != null;
+  const claimableScore = priced ? claimableUsd : amountScore(rows, "claimable");
+  const pendingScore = priced ? pendingUsd : amountScore(rows, "pending");
+  const scale = claimableScore + pendingScore;
+  const width = (score: number) => (scale > 0 && score > 0 ? (score / scale) * 100 : 0);
+  const claimableText = tokenLine(rows, "claimable");
+  const pendingText = tokenLine(rows, "pending");
+  const claimableLabel = claimableText === "0" ? "" : `${claimableText} ready to claim.`;
+  const pendingLabel = pendingText === "0" ? "" : `${pendingText} pending the next Merkl update.`;
+  return {
+    claimable: width(claimableScore),
+    pending: width(pendingScore),
+    label: `${claimableLabel} ${pendingLabel}`.trim(),
+  };
 }
 
-function formatIncentive(percent: number): string {
-  if (!Number.isFinite(percent) || percent < 0) return "Unavailable";
-  if (percent === 0) return "0%";
-  if (percent >= 10000) return ">10,000%";
-  if (percent >= 100) return `${percent.toFixed(0)}%`;
-  if (percent >= 10) return `${percent.toFixed(2)}%`;
-  return `${percent.toFixed(2)}%`;
+function amountScore(rows: readonly MerklAmount[], field: "claimable" | "pending"): number {
+  let total = 0;
+  for (const token of rows) {
+    const value = Number(formatUnits(token[field], token.decimals));
+    if (Number.isFinite(value) && value > 0) total += value;
+  }
+  return total;
 }
 
-function campaignDate(unix: number): string {
-  const date = new Date(unix * 1000);
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
+function tokenLine(rows: readonly MerklAmount[], field: "claimable" | "pending"): string {
+  return merklAmountLine(rows, field) ?? "0";
 }
+
+function usdSuffix(usd: number | null): string {
+  if (usd == null || usd <= 0) return "";
+  return ` · ${formatUsd(usd)}`;
+}
+
+

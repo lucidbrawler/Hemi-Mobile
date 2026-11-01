@@ -6,15 +6,12 @@
  * A token the feed leaves out stays unpriced. Vetro uses its own feed price.
  */
 
-import { HEMIBTC, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
+import { HEMIBTC, HEMI_TOKEN, USDC_E, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
 import { formatUsd } from "./format";
 import { geckoJson } from "./gecko";
 
 /** Canonical WETH on Hemi. Prices native ETH on Ethereum and on Hemi. */
 export const WETH = "0x4200000000000000000000000000000000000006";
-
-/** Bridged USDC (Stargate) on Hemi. veHEMI epoch rewards pay this token. */
-const USDC_E = "0xad11a8BEb98bbf61dbb1aa0F6d6F2ECD87b35afA";
 
 const SIMPLE = "https://api.geckoterminal.com/api/v2/simple/networks/hemi/token_price/";
 
@@ -63,7 +60,7 @@ export function amountUsd(amount: bigint, decimals: number, price: number | null
   const negative = amount < 0n;
   const value = negative ? -amount : amount;
   const scaled = value * 1_000_000n / 10n ** BigInt(decimals);
-  // Smaller than the 6-decimal scale. formatUsd shows this as under a hundredth of a cent.
+  // Smaller than the 6-decimal scale. formatUsd shows this as under $0.000001.
   if (scaled === 0n) return negative ? -1e-12 : 1e-12;
   const units = Number(scaled) / 1e6;
   if (!Number.isFinite(units)) return null;
@@ -128,6 +125,23 @@ export function holdingUsd(
     : tokenPrice(book, token);
   const usd = amountUsd(amount, decimals, price);
   return usd == null ? "Price unavailable" : `≈ ${formatUsd(usd)}`;
+}
+
+/**
+ * Dollar sum of the legs. Zero when every leg is zero.
+ * Null when a non-zero leg has no price, so a missing quote cannot look like $0.
+ */
+export function sumLegsUsd(book: PriceBook | null, legs: readonly UsdLeg[]): number | null {
+  const live = legs.filter((leg) => leg.amount > 0n);
+  if (live.length === 0) return 0;
+  if (book == null) return null;
+  let total = 0;
+  for (const leg of live) {
+    const usd = amountUsd(leg.amount, leg.decimals, tokenPrice(book, leg.address));
+    if (usd == null) return null;
+    total += usd;
+  }
+  return Number.isFinite(total) ? total : null;
 }
 
 /** Dollar line for each non-zero leg, plus a total when every leg has a price. */

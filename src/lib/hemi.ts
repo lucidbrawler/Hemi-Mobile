@@ -1,5 +1,5 @@
 import { Contract, Interface, JsonRpcProvider, getAddress, isAddress } from "ethers";
-import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MERKL_DISTRIBUTOR, MEMPOOL, SUSHI_POSITION_MANAGER, USDT, VAULT_FACTORY, VAULT_INDEX, VETRO_USD, VUSD, WBTC } from "../chain";
+import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_EXPLORER, HEMI_RPC, HEMI_TOKEN, MERKL_DISTRIBUTOR, MEMPOOL, SUSHI_POSITION_MANAGER, USDC_E, USDT, VAULT_FACTORY, VAULT_INDEX, VETRO_USD, VUSD, WBTC } from "../chain";
 import { broadcastEvm, sendCall } from "./evmSend.ts";
 
 const erc20Abi = [
@@ -331,6 +331,7 @@ const KNOWN_TOKENS: Record<string, { symbol: string; decimals: number }> = {
   [VETRO_USD.toLowerCase()]: { symbol: "Vetro", decimals: 18 },
   [WBTC.toLowerCase()]: { symbol: "WBTC", decimals: 8 },
   [USDT.toLowerCase()]: { symbol: "USDT", decimals: 6 },
+  [USDC_E.toLowerCase()]: { symbol: "USDC.e", decimals: 6 },
 };
 
 type Party = { hash?: string } | null;

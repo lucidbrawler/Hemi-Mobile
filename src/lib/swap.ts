@@ -1,5 +1,5 @@
 import { Contract, getAddress } from "ethers";
-import { HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
+import { HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, USDC_E, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
 import { sendCall, broadcastEvm } from "./evmSend.ts";
 import { hemiProvider } from "./hemi";
 import { requirePublic } from "./sessionVault.ts";
@@ -17,7 +17,7 @@ const SLIPPAGE_BPS = 50n;
 /** Left behind when selling Hemi ETH so the swap can still pay gas. */
 export const ETH_GAS_RESERVE = 300_000n * 1_000_000_000n;
 
-export type SwapAssetId = "eth" | "hemi" | "vusd" | "vetro" | "usdt" | "hemibtc" | "wbtc";
+export type SwapAssetId = "eth" | "hemi" | "vusd" | "vetro" | "usdt" | "usdce" | "hemibtc" | "wbtc";
 export type SwapVenue = "sushi" | "nordstern";
 
 const ASSETS: Record<SwapAssetId, { address: string; native: boolean }> = {
@@ -26,6 +26,7 @@ const ASSETS: Record<SwapAssetId, { address: string; native: boolean }> = {
   vusd: { address: VUSD, native: false },
   vetro: { address: VETRO_USD, native: false },
   usdt: { address: USDT, native: false },
+  usdce: { address: USDC_E, native: false },
   hemibtc: { address: HEMIBTC, native: false },
   wbtc: { address: WBTC, native: false },
 };
@@ -37,6 +38,7 @@ const NAMES: Record<string, string> = {
   [VUSD.toLowerCase()]: "VUSD",
   [VETRO_USD.toLowerCase()]: "Vetro",
   [USDT.toLowerCase()]: "USDT",
+  [USDC_E.toLowerCase()]: "USDC.e",
   [HEMIBTC.toLowerCase()]: "hemiBTC",
   [WBTC.toLowerCase()]: "WBTC",
 };

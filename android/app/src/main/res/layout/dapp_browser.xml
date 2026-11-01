@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/dapp_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp">
+
+        <Button
+            android:id="@+id/dapp_back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:text="‹"
+            android:textSize="22sp" />
+
+        <EditText
+            android:id="@+id/dapp_url"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:hint="https://"
+            android:imeOptions="actionGo"
+            android:importantForAutofill="no"
+            android:inputType="textUri"
+            android:singleLine="true" />
+
+        <Button
+            android:id="@+id/dapp_go"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:text="Go" />
+
+        <Button
+            android:id="@+id/dapp_close"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:text="Close" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/dapp_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:max="100" />
+
+    <WebView
+        android:id="@+id/dapp_web"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+</LinearLayout>

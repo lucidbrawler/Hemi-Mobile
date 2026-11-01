@@ -64,10 +64,9 @@ Android SDK and JDK 21 are required. Capacitor’s Android library is compiled a
 
 ```bash
 JAVA_HOME="$HOME/.local/jdks/jdk-21.0.12.1+1" npm run android:apk
-cp android/app/build/outputs/apk/debug/app-debug.apk hemi-btc-demo.apk
 ```
 
-`npm run android:apk` writes `android/app/build/outputs/apk/debug/app-debug.apk`. The sideload copy from this build is `hemi-btc-demo.apk` (gitignored). Debug builds are signed with the Android debug key and are for sideloading, not the Play Store. The current sideload build is 1.24. The GitHub release attaches `hemi-btc-1.24.apk`. Installing it updates the existing Hemi BTC app (`app.demo.hemibtcwallet`); the signing key is unchanged.
+`npm run android:apk` writes `android/app/build/outputs/apk/debug/hemi-btc-<version>.apk` and copies that same file to `hemi-btc-<version>.apk` in this directory. The version in the filename is `versionName` from `android/app/build.gradle`. A new version does not replace an older APK file. Both copies are gitignored. Debug builds are signed with the Android debug key and are for sideloading, not the Play Store. The current release file is `hemi-btc-1.31.apk`. Installing it updates the existing Hemi BTC app (`app.demo.hemibtcwallet`); the signing key is unchanged.
 
 ## References
 

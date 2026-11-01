@@ -13,7 +13,7 @@ import {
   type MerklIncentive,
   type MerklWalletRewards,
 } from "./merklParse";
-import { legsUsd, type PriceBook } from "./prices";
+import { legsUsd, sumLegsUsd, type PriceBook } from "./prices";
 
 export type { MerklAmount, MerklClaimToken, MerklIncentive, MerklPoolReward, MerklWalletRewards } from "./merklParse";
 export {
@@ -101,6 +101,20 @@ export async function claimMerklRewards(tokenAddresses: readonly string[]): Prom
   return sent.hash;
 }
 
+/** Dollar sum for one Merkl field. Null when a non-zero amount has no price. */
+export function merklAmountValue(
+  tokens: readonly MerklAmount[],
+  book: PriceBook | null,
+  field: "claimable" | "pending",
+): number | null {
+  return sumLegsUsd(book, tokens.map((token) => ({
+    amount: token[field],
+    decimals: token.decimals,
+    address: token.address,
+    label: token.symbol,
+  })));
+}
+
 export function merklAmountUsd(
   tokens: readonly MerklAmount[],
   book: PriceBook | null,
@@ -152,9 +166,16 @@ function merklUrl(path: string): string {
   return Capacitor.isNativePlatform() ? `https://api.merkl.xyz${path}` : `/api/merkl${path}`;
 }
 
+const MERKL_HEADERS = {
+  Accept: "application/json",
+  // api.merkl.xyz answers 403 when this header is missing. The Android HTTP
+  // proxy only forwards a User-Agent the page itself sets.
+  "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+};
+
 async function merklJson(path: string): Promise<unknown | null> {
   try {
-    const response = await fetch(merklUrl(path));
+    const response = await fetch(merklUrl(path), { headers: MERKL_HEADERS });
     if (!response.ok) return null;
     return await response.json() as unknown;
   } catch {

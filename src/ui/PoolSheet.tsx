@@ -4,6 +4,8 @@ import hemiIcon from "../assets/hemi.svg";
 import hemiBtcIcon from "../assets/hemibtc.svg";
 import vusdIcon from "../assets/vusd.svg";
 import vetroIcon from "../assets/vetro.svg";
+import usdtIcon from "../assets/usdt.svg";
+import usdceIcon from "../assets/usdce.svg";
 import wbtcIcon from "../assets/wbtc.svg";
 import { formatUnits, parseUnits } from "../lib/format";
 import { messageOf } from "../lib/errors";
@@ -16,7 +18,8 @@ import {
   type LpRewardSnapshot,
 } from "../lib/lpRewards";
 import { loadMerklIncentive, type MerklIncentive } from "../lib/merkl";
-import { MerklOnPosition, useMerklRewards } from "./MerklPosition";
+import { PositionMerkl, RewardViewToggle, offerMerklClaim, positionPoolAddress, useMerklRewards, type RewardView } from "./MerklPosition";
+import { PositionRewardBar } from "./RewardMeter";
 import { loadPoolPriceSeries } from "../lib/poolChart";
 import { estimateFeeApr, loadFeeAprInputs, type FeeAprEstimate, type FeeAprInputs } from "../lib/poolApr";
 import {
@@ -39,7 +42,6 @@ import {
   type PoolMarket,
   type PoolQuote,
   type PoolSide,
-  type PoolVenue,
   type TickRange,
 } from "../lib/pool";
 import { ETH_GAS_RESERVE } from "../lib/swap";
@@ -53,6 +55,8 @@ const ICONS: Record<PoolAsset, string> = {
   hemibtc: hemiBtcIcon,
   vetro: vetroIcon,
   wbtc: wbtcIcon,
+  usdt: usdtIcon,
+  usdce: usdceIcon,
 };
 
 const RANGE_PRESETS = [
@@ -224,28 +228,6 @@ export function PoolSheet({ onClose, initialMode = "deposit" }: { onClose: () =>
     return () => { cancel = true; };
   }, [quote, pool, wallet.hemiAddress]);
 
-  const venuePools = POOLS.filter((item) => item.venue === pool.venue);
-  const pairs: PoolInfo[] = [];
-  for (const item of venuePools) {
-    if (!pairs.some((row) => row.pair === item.pair)) pairs.push(item);
-  }
-  const fees = venuePools.filter((item) => item.pair === pool.pair);
-
-  function pickVenue(next: PoolVenue) {
-    const rows = POOLS.filter((item) => item.venue === next);
-    const match = rows.find((item) => item.pair === pool.pair && item.preferred)
-      ?? rows.find((item) => item.pair === pool.pair)
-      ?? rows.find((item) => item.preferred)
-      ?? rows[0];
-    setPoolId(match.id);
-  }
-
-  function pickPair(pair: string) {
-    const rows = venuePools.filter((item) => item.pair === pair);
-    const match = rows.find((item) => item.preferred) ?? rows[0];
-    setPoolId(match.id);
-  }
-
   function pickPreset(next: RangePreset) {
     if (next === "custom" && market) {
       const seed = preset === "full" || !range ? bandRange(market.tick, market.spacing, 15) : range;
@@ -370,35 +352,26 @@ export function PoolSheet({ onClose, initialMode = "deposit" }: { onClose: () =>
               <b>{market ? `1 ${spec0.label} = ${formatSqrtPrice(market.sqrtPriceX96, spec0.decimals, spec1.decimals)} ${spec1.label}` : "Reading the pool…"}</b>
             </div>
 
-            <div className="rowline">
-              <span>Venue</span>
-              <div className="swap-routes">
-                <button type="button" className={pool.venue === "sushi" ? "on" : ""} onClick={() => pickVenue("sushi")}>Sushi</button>
-                <button type="button" className={pool.venue === "brownfi" ? "on" : ""} onClick={() => pickVenue("brownfi")}>BrownFi</button>
-              </div>
-            </div>
-            <div className="rowline">
+            <div className="rowline pool-pick">
               <span>Pool</span>
-              <div className="swap-routes">
-                {pairs.map((item) => (
-                  <button key={item.pair} type="button" className={item.pair === pool.pair ? "on" : ""} onClick={() => pickPair(item.pair)}>
-                    {item.pairLabel}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {fees.length > 1 && (
-              <div className="rowline">
-                <span>Fee</span>
-                <div className="swap-routes">
-                  {fees.map((item) => (
-                    <button key={item.id} type="button" className={item.id === pool.id ? "on" : ""} onClick={() => setPoolId(item.id)}>
-                      {item.feeLabel}
-                    </button>
+              <select
+                className="pool-select"
+                aria-label="Pool"
+                value={pool.id}
+                onChange={(event) => setPoolId(event.target.value)}
+              >
+                <optgroup label="Sushi">
+                  {POOLS.filter((item) => item.venue === "sushi").map((item) => (
+                    <option key={item.id} value={item.id}>{poolOptionLabel(item)}</option>
                   ))}
-                </div>
-              </div>
-            )}
+                </optgroup>
+                <optgroup label="BrownFi">
+                  {POOLS.filter((item) => item.venue === "brownfi").map((item) => (
+                    <option key={item.id} value={item.id}>{poolOptionLabel(item)}</option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
             <div className="rowline">
               <span>Range</span>
               <div className="swap-routes">
@@ -525,6 +498,7 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
   const [sure, setSure] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [view, setView] = useState<RewardView>("fees");
   const noGas = ethWei === 0n;
 
   useEffect(() => {
@@ -540,12 +514,6 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
   const positions = snapshot?.positions ?? [];
   const merkl = useMerklRewards(owner, reloadKey);
   const owed = positions.filter((position) => position.feesKnown && (position.fee0 > 0n || position.fee1 > 0n));
-  const poolCounts = new Map<string, number>();
-  for (const position of positions) {
-    const pool = poolById(position.poolId)?.pool.toLowerCase();
-    if (!pool) continue;
-    poolCounts.set(pool, (poolCounts.get(pool) ?? 0) + 1);
-  }
   const canClaimFees = owed.length > 0 && sure && !noGas && !busy;
 
   async function claimFees(rows: LpPosition[]) {
@@ -582,32 +550,41 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
               ? "Claim all fees"
               : "Claim fees";
 
+  const claimedTokens = new Set<string>();
+
   return (
     <div>
+      {positions.length > 0 && (
+        <div className="rowline">
+          <span>Show</span>
+          <RewardViewToggle view={view} onChange={setView} />
+        </div>
+      )}
       <p className="fine">
-        Trading fees accrue on each position. A claim sends those fees to this wallet. Merkl incentives show on the position, and a Merkl claim is separate.
+        {view === "fees"
+          ? "Trading fees accrue on each open position."
+          : "Merkl rewards for the positions open in this wallet."}
       </p>
       {snapshot == null && !error && <p className="empty">Loading positions…</p>}
       {snapshot != null && positions.length === 0 && (
         <p className="empty">No liquidity positions in this wallet yet. A deposit creates one, and its trading fees show up here.</p>
       )}
-      {owed.length > 0 && (
+      {view === "fees" && owed.length > 0 && (
         <label className="check">
           <input type="checkbox" checked={sure} onChange={(event) => setSure(event.target.checked)} />
           <span>Broadcast this claim on mainnet.</span>
         </label>
       )}
       {snapshot?.truncated && <p className="fine">Showing the first 30 positions on each venue.</p>}
-      {merkl.data && !merkl.data.rewardsReady && positions.length > 0 && (
-        <p className="fine">Merkl rewards did not load.</p>
-      )}
+
       <div className="list">
         {positions.map((position) => {
           const fees = feeLine(position);
           const feeUsd = positionUsdLine(position, w.prices, "fees");
           const hasFees = position.feesKnown && (position.fee0 > 0n || position.fee1 > 0n);
-          const pool = poolById(position.poolId)?.pool ?? null;
           const id = `${position.venue}-${position.tokenId}`;
+          const pool = positionPoolAddress(position.poolId);
+          const offerClaim = view === "merkl" && offerMerklClaim(merkl.data, pool, claimedTokens);
           return (
             <div className="card stake-pos" key={id}>
               <div className="rowline">
@@ -620,43 +597,42 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
               </div>
               <div className="rowline">
                 <span>{position.priceUnit}</span>
-                <b>{position.inRange ? "In range" : "Out of range"}</b>
+                <b className={position.inRange ? "pill ok" : "pill off"}>{position.inRange ? "In range" : "Out of range"}</b>
               </div>
-              <div className="rowline">
-                <span>Fees</span>
-                <b>{fees}</b>
-              </div>
-              {feeUsd && (
-                <div className="rowline">
-                  <span>Value</span>
-                  <b>{feeUsd}</b>
-                </div>
+              {view === "fees" ? (
+                <>
+                  <PositionRewardBar position={position} book={w.prices} />
+                  <div className="rowline">
+                    <span>Fees</span>
+                    <b>{fees}</b>
+                  </div>
+                  {feeUsd && (
+                    <div className="rowline">
+                      <span>Value</span>
+                      <b>{feeUsd}</b>
+                    </div>
+                  )}
+                  {hasFees && (
+                    <div className="actions">
+                      <button
+                        className="ghost"
+                        type="button"
+                        disabled={!sure || noGas || busy}
+                        onClick={() => void claimFees([position])}
+                      >
+                        {busy ? "Claiming…" : !sure ? "Confirm on mainnet" : noGas ? "Need ETH for gas" : "Claim"}
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <PositionMerkl pool={pool} merkl={merkl} noGas={noGas} offerClaim={offerClaim} />
               )}
-              {hasFees && (
-                <div className="actions">
-                  <button
-                    className="ghost"
-                    type="button"
-                    disabled={!sure || noGas || busy}
-                    onClick={() => void claimFees([position])}
-                  >
-                    {busy ? "Claiming…" : !sure ? "Confirm on mainnet" : noGas ? "Need ETH for gas" : "Claim"}
-                  </button>
-                </div>
-              )}
-              <MerklOnPosition
-                id={id}
-                pool={pool}
-                inRange={position.inRange}
-                shared={(poolCounts.get(pool?.toLowerCase() ?? "") ?? 0) > 1}
-                merkl={merkl}
-                noGas={noGas}
-              />
             </div>
           );
         })}
       </div>
-      {owed.length > 1 && (
+      {view === "fees" && owed.length > 1 && (
         <button
           className={canClaimFees ? "btn primary wide" : "btn wide swap-wait"}
           type="button"
@@ -668,7 +644,7 @@ function RewardsPanel({ owner, ethWei }: { owner: string; ethWei: bigint | null 
       )}
 
       {error && <p className="banner bad">{error}</p>}
-      {noGas && owed.length > 0 && (
+      {view === "fees" && noGas && owed.length > 0 && (
         <p className="fine">This Hemi address has no ETH for gas. Receive a small amount of ETH first.</p>
       )}
     </div>
@@ -795,7 +771,9 @@ function freeOf(id: PoolAsset, balances: ReturnType<typeof useWallet>["balances"
       : id === "vusd" ? balances.vusdWei
         : id === "vetro" ? balances.vetroWei
           : id === "wbtc" ? balances.wbtcSats
-            : balances.hemiSats;
+            : id === "usdt" ? balances.usdtRaw
+              : id === "usdce" ? balances.usdceRaw
+                : balances.hemiSats;
   if (balance == null) return null;
   if (id !== "eth") return balance;
   return balance > ETH_GAS_RESERVE ? balance - ETH_GAS_RESERVE : 0n;
@@ -804,6 +782,10 @@ function freeOf(id: PoolAsset, balances: ReturnType<typeof useWallet>["balances"
 function heldEth(balance: bigint | null, free: bigint | null): bigint {
   if (balance == null || free == null || balance <= free) return 0n;
   return balance - free;
+}
+
+function poolOptionLabel(item: PoolInfo): string {
+  return item.feeLabel ? `${item.pairLabel} · ${item.feeLabel}` : item.pairLabel;
 }
 
 function shortfall(pool: PoolInfo, quote: PoolQuote, free0: bigint | null, free1: bigint | null): string {
@@ -825,9 +807,11 @@ function shortfall(pool: PoolInfo, quote: PoolQuote, free0: bigint | null, free1
 function venueNote(pool: PoolInfo): string {
   const vetro = pool.token0 === "vetro" || pool.token1 === "vetro";
   const wbtc = pool.token0 === "wbtc" || pool.token1 === "wbtc";
+  const usdce = pool.token0 === "usdce" || pool.token1 === "usdce";
   const parts = [
     vetro ? "BrownFi calls this token VUSD. It is Vetro USD, not the official VUSD in this wallet." : "",
     wbtc ? "WBTC is Wrapped BTC. The deposit uses the WBTC held by this address." : "",
+    usdce ? "USDC.e is bridged USDC on Hemi. 6 decimals. It is not USDT or VUSD." : "",
   ].filter(Boolean);
   return parts.length ? ` ${parts.join(" ")}` : "";
 }

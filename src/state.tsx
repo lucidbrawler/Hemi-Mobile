@@ -28,7 +28,7 @@ import {
   withdrawEth as withdrawEthTx,
   type WithdrawalFields,
 } from "./lib/ethBridge";
-import { ETH_EXPLORER, HEMI_TOKEN, USDT, VETRO_USD, VUSD, WBTC } from "./chain";
+import { ETH_EXPLORER, HEMI_TOKEN, USDC_E, USDT, VETRO_USD, VUSD, WBTC } from "./chain";
 import { claimPositionFees, withdrawLp, type LpWithdraw } from "./lib/lpRewards";
 import { claimMerklRewards } from "./lib/merkl";
 import { assetSpec, executePoolDeposit, executePoolIncrease, poolById, type PoolDeposit, type PoolIncrease, type PoolVenue } from "./lib/pool";
@@ -134,13 +134,14 @@ function swapName(id: SwapAssetId): string {
     case "vusd": return "VUSD";
     case "vetro": return "Vetro";
     case "usdt": return "USDT";
+    case "usdce": return "USDC.e";
     case "hemibtc": return "hemiBTC";
     case "wbtc": return "WBTC";
   }
 }
 
 function swapDecimals(id: SwapAssetId): number {
-  if (id === "usdt") return 6;
+  if (id === "usdt" || id === "usdce") return 6;
   if (id === "hemibtc" || id === "wbtc") return 8;
   return 18;
 }
@@ -159,6 +160,7 @@ type Balances = {
   vetroWei: bigint | null;
   wbtcSats: bigint | null;
   usdtRaw: bigint | null;
+  usdceRaw: bigint | null;
   usd: number | null;
   symbol: string;
   decimals: number;
@@ -207,6 +209,7 @@ type WalletApi = {
   sendVetro: (to: string, amount: bigint) => Promise<string>;
   sendWbtc: (to: string, amount: bigint) => Promise<string>;
   sendUsdt: (to: string, amount: bigint) => Promise<string>;
+  sendUsdce: (to: string, amount: bigint) => Promise<string>;
   swap: (order: SwapOrder, onPhase?: (phase: "approve" | "swap") => void) => Promise<string>;
   addLiquidity: (order: PoolDeposit, onPhase?: (phase: "approve" | "deposit") => void) => Promise<string>;
   addToPosition: (order: PoolIncrease, onPhase?: (phase: "approve" | "deposit") => void) => Promise<string>;
@@ -246,6 +249,7 @@ const emptyBalances: Balances = {
   vetroWei: null,
   wbtcSats: null,
   usdtRaw: null,
+  usdceRaw: null,
   usd: null,
   symbol: "hemiBTC",
   decimals: 8,
@@ -345,7 +349,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setError(null);
     const priceTask = fetchTokenPrices(PRICE_TOKENS);
     try {
-      const [btcSats, hemi, usd, nextVault, l1EthWei, hemiToken, vusd, vetro, wbtc, usdt] = await Promise.all([
+      const [btcSats, hemi, usd, nextVault, l1EthWei, hemiToken, vusd, vetro, wbtc, usdt, usdce] = await Promise.all([
         fetchBtcBalance(wallet.btcAddress),
         readHemiBalances(wallet.hemiAddress),
         fetchBtcPrice().catch(() => null),
@@ -356,6 +360,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         readErc20(wallet.hemiAddress, VETRO_USD, "Vetro", 18).catch(() => null),
         readErc20(wallet.hemiAddress, WBTC, "WBTC", 8).catch(() => null),
         readErc20(wallet.hemiAddress, USDT, "USDT", 6).catch(() => null),
+        readErc20(wallet.hemiAddress, USDC_E, "USDC.e", 6).catch(() => null),
       ]);
       setBalances({
         btcSats,
@@ -371,6 +376,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         vetroWei: vetro?.raw ?? null,
         wbtcSats: wbtc?.raw ?? null,
         usdtRaw: usdt?.raw ?? null,
+        usdceRaw: usdce?.raw ?? null,
         usd,
         symbol: hemi.symbol,
         decimals: hemi.decimals,
@@ -616,6 +622,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         const hash = await sendErc20(USDT, to, amount);
         noteHemi(current.hemiAddress, hash, "USDT sent", "Pending", [{ amount: (-amount).toString(), decimals: 6, symbol: "USDT" }]);
         setNotice(`USDT sent. ${hash.slice(0, 10)}…`);
+        celebrate("Sent.");
+        await refresh();
+        return hash;
+      },
+      async sendUsdce(to, amount) {
+        pokeBuddy();
+        const current = requirePublic();
+        const hash = await sendErc20(USDC_E, to, amount);
+        noteHemi(current.hemiAddress, hash, "USDC.e sent", "Pending", [{ amount: (-amount).toString(), decimals: 6, symbol: "USDC.e" }]);
+        setNotice(`USDC.e sent. ${hash.slice(0, 10)}…`);
         celebrate("Sent.");
         await refresh();
         return hash;

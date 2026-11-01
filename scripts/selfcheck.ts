@@ -214,6 +214,29 @@ if (settled.claims[0]?.proofs?.length !== 0) throw new Error("an empty proof lis
 const broken = readMerklWallet(null, null, null);
 if (broken.rewardsReady || broken.byPool.size !== 0) throw new Error("missing merkl feeds");
 
+const walletOnly = readMerklWallet(null, {
+  opportunities: [{
+    opportunity: { explorerAddress: pool },
+    tokens: [{
+      token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+      amount: "4000000",
+      claimed: "1000000",
+    }],
+  }],
+}, [{
+  rewards: [{
+    token: { address: usdc, symbol: "USDC.e", decimals: 6 },
+    amount: "9000000",
+    claimed: "1000000",
+    pending: "50",
+    proofs: [proof],
+  }],
+}]);
+if (!walletOnly.rewardsReady || walletOnly.byPool.size !== 1) throw new Error("wallet merkl should keep a reward with no open campaign");
+if (walletOnly.byPool.get(pool)?.tokens[0]?.claimable !== 3_000_000n) throw new Error("amount minus claimed is claimable");
+if (walletOnly.byPool.get(pool)?.tokens[0]?.pending !== 0n) throw new Error("missing pending is zero");
+if (walletOnly.claims[0]?.claimable !== 8_000_000n) throw new Error("wallet claimable ignores the pool card");
+
 console.log("selfcheck ok");
 console.log(wallet.btcAddress);
 console.log(wallet.hemiAddress);

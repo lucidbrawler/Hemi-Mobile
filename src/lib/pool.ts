@@ -1,5 +1,5 @@
 import { Contract, Interface, getAddress } from "ethers";
-import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, SUSHI_POSITION_MANAGER, VETRO_USD, VUSD, WBTC } from "../chain";
+import { BROWNFI_POSITION_MANAGER, HEMIBTC, HEMI_CHAIN_ID, HEMI_TOKEN, SUSHI_POSITION_MANAGER, USDC_E, USDT, VETRO_USD, VUSD, WBTC } from "../chain";
 import { broadcastEvm, sendCall } from "./evmSend.ts";
 import { formatUnits, parseUnits } from "./format";
 import { hemiProvider } from "./hemi";
@@ -46,7 +46,7 @@ const ownedPositionAbi = [
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
 ];
 
-export type PoolAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc";
+export type PoolAsset = "eth" | "hemi" | "vusd" | "hemibtc" | "vetro" | "wbtc" | "usdt" | "usdce";
 export type PoolVenue = "sushi" | "brownfi";
 export type PoolSide = "token0" | "token1";
 
@@ -76,13 +76,16 @@ const ASSETS: Record<PoolAsset, AssetSpec> = {
   /** BrownFi's VUSD ticker. A different contract from official VUSD. */
   vetro: { label: "Vetro", decimals: 18, address: VETRO_USD, native: false },
   wbtc: { label: "WBTC", decimals: 8, address: WBTC, native: false },
+  usdt: { label: "USDT", decimals: 6, address: USDT, native: false },
+  usdce: { label: "USDC.e", decimals: 6, address: USDC_E, native: false },
 };
 
 /**
- * Live Hemi pools read back from the factories. Empty pools are left out.
- * Sushi pairs are ETH, HEMI, official VUSD, and hemiBTC.
- * BrownFi's HEMI and WETH "VUSD" markets are Vetro USD, not official VUSD.
- * Official VUSD has no BrownFi pool with HEMI or WETH.
+ * Live Hemi pools read back from the factories, plus the live Merkl markets.
+ * Empty pools are left out.
+ * Sushi pairs are ETH, HEMI, official VUSD, hemiBTC, USDT, and bridged USDC.e.
+ * BrownFi's HEMI, WETH, hemiBTC, and USDC.e "VUSD" markets are Vetro USD, not official VUSD.
+ * Official VUSD has no BrownFi pool with HEMI, WETH, or hemiBTC.
  */
 export const POOLS: PoolInfo[] = [
   pool("sushi", "hemi-eth", "HEMI / ETH", "eth", "hemi", 500, "0x0222c96283754e92c859336b95f293d061675463", false),
@@ -97,10 +100,14 @@ export const POOLS: PoolInfo[] = [
   pool("sushi", "hemibtc-eth", "hemiBTC / ETH", "eth", "hemibtc", 10000, "0xe31377f1f1e200a24e8c2d5b059829635b8c34ea", false),
   pool("sushi", "hemibtc-vusd", "hemiBTC / VUSD", "vusd", "hemibtc", 3000, "0x2870cbb75529cd48b5cb04cbc454bb9e81a43962", false),
   pool("sushi", "hemibtc-vusd", "hemiBTC / VUSD", "vusd", "hemibtc", 10000, "0x249b964a6abff2ea43c6502eabaddc68e08276df", true),
+  pool("sushi", "hemi-usdce", "HEMI / USDC.e", "hemi", "usdce", 500, "0xce6976fA615B4DF3D2c7FDC2C2c7ed47291221dA", true),
+  pool("sushi", "hemi-usdt", "HEMI / USDT", "hemi", "usdt", 500, "0x707B525AcCd5ad9256245825D462A710cd2b8e74", true),
   pool("brownfi", "hemibtc-eth", "hemiBTC / ETH", "eth", "hemibtc", 0, "0x44b4db10a1891926f8b655944babe0cdde774b90", true),
   pool("brownfi", "hemi-vetro", "HEMI / Vetro", "hemi", "vetro", 0, "0x7e8b925b43dBb364DeF5E44e93E9f8fBc02cfC21", true),
   pool("brownfi", "vetro-eth", "Vetro / ETH", "eth", "vetro", 0, "0x6153eF0ABFE8fA881A2492743dfc34ec594868D1", true),
   pool("brownfi", "wbtc-hemibtc", "WBTC / hemiBTC", "wbtc", "hemibtc", 0, "0xd34D0734b8d225dF900f21a1EF5444AdCE7e4BEA", true),
+  pool("brownfi", "hemibtc-vetro", "hemiBTC / Vetro", "hemibtc", "vetro", 0, "0x7348524B8A45106885e415d33D200A4EC0a23fae", true),
+  pool("brownfi", "usdce-vetro", "USDC.e / Vetro", "usdce", "vetro", 0, "0x51E2CB4E3b37254615f17f40b8a0595e1b26890e", true),
 ];
 
 export const DEFAULT_POOL_ID = "sushi-hemi-eth-3000";

@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "selfcheck": "node --experimental-strip-types scripts/selfcheck.ts && node --experimental-strip-types --import ./scripts/register-ts.mjs scripts/reviewcheck.ts",
     "android:sync": "npm run build && npx cap sync android",
-    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug && cd .. && ver=$(grep -m1 'versionName' android/app/build.gradle | sed -n 's/.*versionName \"\\([^\"]*\\)\".*/\\1/p') && test -n \"$ver\" && cp \"android/app/build/outputs/apk/debug/hemi-btc-${ver}.apk\" \"hemi-btc-${ver}.apk\" && rm -f hemi-btc-demo.apk"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.2",

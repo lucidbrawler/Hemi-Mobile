@@ -20,6 +20,41 @@ export function satsToBtc(sats: bigint): string {
   return formatUnits(sats, 8);
 }
 
+/**
+ * Amount for a balance row. Thousands are grouped, and a long fraction is shortened.
+ * Amounts under 1 keep the first significant digits, so 0.003509 stays 0.003509.
+ * Send and Max fields keep formatUnits, which is the exact value.
+ */
+export function formatAmount(amount: bigint, decimals: number): string {
+  const neg = amount < 0n;
+  const text = formatUnits(neg ? -amount : amount, decimals);
+  const [whole, frac = ""] = text.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const shown = trimFraction(frac);
+  const body = shown ? `${grouped}.${shown}` : grouped;
+  return neg ? `-${body}` : body;
+}
+
+function trimFraction(frac: string): string {
+  if (!frac) return "";
+  if (frac.length <= 6) return frac;
+  const head = frac.slice(0, 6).replace(/0+$/, "");
+  if (head) return head;
+  const sig = frac.search(/[1-9]/);
+  if (sig < 0) return "";
+  return frac.slice(0, sig + 4).replace(/0+$/, "");
+}
+
+/** Visual grouping for a copied address. The clipboard still gets the raw value. */
+export function groupAddress(value: string): string {
+  if (value.startsWith("0x") && value.length > 2) {
+    const chunks = value.slice(2).match(/.{1,4}/g) ?? [value.slice(2)];
+    return `0x ${chunks.join(" ")}`;
+  }
+  const chunks = value.match(/.{1,4}/g);
+  return chunks ? chunks.join(" ") : value;
+}
+
 export function btcToSats(input: string): bigint | null {
   return parseUnits(input, 8);
 }
@@ -27,12 +62,20 @@ export function btcToSats(input: string): bigint | null {
 export function formatUsd(amount: number): string {
   if (!Number.isFinite(amount)) return "—";
   const abs = Math.abs(amount);
-  if (abs > 0 && abs < 0.0001) return amount < 0 ? ">-$0.0001" : "<$0.0001";
-  const digits = abs >= 1000 ? 0 : abs < 0.01 ? 4 : 2;
+  const sign = amount < 0 ? "-" : "";
+  // Dust below the 6-decimal scale. A rounded $0.0035 reads as a shifted point.
+  if (abs > 0 && abs < 0.0000005) return `${sign}<$0.000001`;
+  if (abs < 0.1) {
+    const text = abs.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+    const [whole, frac = ""] = text.split(".");
+    const shown = frac.length < 2 ? frac.padEnd(2, "0") : frac;
+    return `${sign}$${whole}.${shown}`;
+  }
+  const digits = abs >= 1000 ? 0 : 2;
   return amount.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: digits === 4 ? 2 : digits,
+    minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
 }

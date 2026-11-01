@@ -54,6 +54,9 @@ export const WBTC = "0x03C7054BCB39f7b2e5B2c7AcB37583e32D70Cfa3";
 /** USDT on Hemi mainnet, from the Hemi token list. 6 decimals. */
 export const USDT = "0xbB0D083fb1be0A9f6157ec484b6C79E0A4e31C2e";
 
+/** Bridged USDC (Stargate) on Hemi. 6 decimals. veHEMI epoch rewards pay this token. */
+export const USDC_E = "0xad11a8BEb98bbf61dbb1aa0F6d6F2ECD87b35afA";
+
 /**
  * SushiSwap V3 position NFT on Hemi.
  * factory() is 0xcdbcd51a5e8728e0af4895ce5771b7d17ff71959 and WETH9 is canonical WETH.

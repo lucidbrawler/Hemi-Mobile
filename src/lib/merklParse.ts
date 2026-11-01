@@ -194,11 +194,24 @@ function readBreakdowns(body: unknown, byPool: Map<string, MerklPoolReward>): bo
 
 function readBreakdownToken(item: unknown): MerklAmount | null {
   if (!item || typeof item !== "object") return null;
-  const row = item as { token?: unknown; claimable?: unknown; pending?: unknown };
+  const row = item as {
+    token?: unknown;
+    claimable?: unknown;
+    pending?: unknown;
+    amount?: unknown;
+    claimed?: unknown;
+  };
   const token = readToken(row.token);
-  const claimable = rawAmount(row.claimable);
-  const pending = rawAmount(row.pending);
-  if (!token || claimable == null || pending == null) return null;
+  if (!token) return null;
+  let claimable = rawAmount(row.claimable);
+  if (claimable == null) {
+    const amount = rawAmount(row.amount);
+    const claimed = rawAmount(row.claimed);
+    if (amount == null || claimed == null || amount < claimed) return null;
+    claimable = amount - claimed;
+  }
+  // A missing pending field is unpaid-not-yet-in-the-root of zero, not a broken row.
+  const pending = rawAmount(row.pending) ?? 0n;
   return { ...token, claimable, pending };
 }
 

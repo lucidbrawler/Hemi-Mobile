@@ -1,6 +1,6 @@
 import { useTheme, type ThemeName } from "./theme";
 
-export function Tools({ onOpen }: { onOpen: (page: "tunnel" | "pop") => void }) {
+export function Tools({ onOpen }: { onOpen: (page: "tunnel" | "pop" | "browser") => void }) {
   const { theme, choose } = useTheme();
 
   return (
@@ -15,6 +15,13 @@ export function Tools({ onOpen }: { onOpen: (page: "tunnel" | "pop") => void }) 
 
       <section className="card tools-card">
         <div className="kicker"><span>More</span></div>
+        <button className="menu-row" type="button" onClick={() => onOpen("browser")}>
+          <span>
+            <b>Browser</b>
+            <small>Open a site and connect this Hemi address.</small>
+          </span>
+          <i aria-hidden="true">›</i>
+        </button>
         <button className="menu-row" type="button" onClick={() => onOpen("tunnel")}>
           <span>
             <b>Tunnel</b>
