@@ -67,7 +67,7 @@ JAVA_HOME="$HOME/.local/jdks/jdk-21.0.12.1+1" npm run android:apk
 cp android/app/build/outputs/apk/debug/app-debug.apk hemi-btc-demo.apk
 ```
 
-`npm run android:apk` writes `android/app/build/outputs/apk/debug/app-debug.apk`. The sideload copy from this build is `hemi-btc-demo.apk` (gitignored). Debug builds are signed with the Android debug key and are for sideloading, not the Play Store. The current sideload build is 1.23. The GitHub release attaches `hemi-btc-1.23.apk`.
+`npm run android:apk` writes `android/app/build/outputs/apk/debug/app-debug.apk`. The sideload copy from this build is `hemi-btc-demo.apk` (gitignored). Debug builds are signed with the Android debug key and are for sideloading, not the Play Store. The current sideload build is 1.24. The GitHub release attaches `hemi-btc-1.24.apk`. Installing it updates the existing Hemi BTC app (`app.demo.hemibtcwallet`); the signing key is unchanged.
 
 ## References
 
