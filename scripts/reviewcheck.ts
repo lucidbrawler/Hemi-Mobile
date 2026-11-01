@@ -4,7 +4,7 @@ import { requireEthAddress } from "../src/lib/ethBridge.ts";
 import { IDLE_LOCK_MS, shouldAutoLock } from "../src/lib/lockPolicy.ts";
 import { assertNativePassword, passwordMeetsBar } from "../src/lib/password.ts";
 import { amountsForLiquidity, bandRange, depositSides, fullRange, quoteWithdraw, sqrtPriceAtTick } from "../src/lib/pool.ts";
-import { stakeExtensions, stakeUnlockAt, stakeWeight } from "../src/lib/stake.ts";
+import { stakeExtensions, stakeRewardFloor, stakeUnlockAt, stakeWeight } from "../src/lib/stake.ts";
 
 if (!globalThis.crypto?.subtle) {
   Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
@@ -109,6 +109,11 @@ if (stakeWeight(1_000_000_000_000_000_000n, now, now) !== 0n) fail("an ended loc
 if (stakeWeight(1_000_000_000_000_000_000n, unlock, now) <= 0n) fail("a live lock should have weight");
 if (stakeExtensions(now, now).length !== 0) fail("an ended lock has no extensions");
 if (stakeExtensions(now, unlock).length === 0) fail("a short lock should offer more time");
+const settled = 3409;
+if (stakeRewardFloor({ rewards: { firstFundableEpoch: 3400 } }, settled) !== 3400) fail("reward floor reads the snapshot rewards block");
+if (stakeRewardFloor({ firstFundableEpoch: 3400 }, settled) !== 3400) fail("reward floor still reads a root epoch");
+if (stakeRewardFloor({ rewards: { firstFundableEpoch: 3410 } }, settled) != null) fail("a floor past the settled epoch is unusable");
+if (stakeRewardFloor({}, settled) != null) fail("a snapshot with no floor stays unset");
 
 const fee = estimateSpend([{ txid: "11".repeat(32), vout: 0, value: 100_000 }], 10_000n, 2, false);
 if (fee <= 0n || fee >= 10_000n) fail(`spend fee ${fee}`);

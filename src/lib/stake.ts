@@ -356,18 +356,40 @@ export async function extendHemiLock(
   return hemiCall(VE_HEMI, veAbi, "increaseUnlockTime", [tokenId, duration]);
 }
 
+/**
+ * First epoch the reward contract will still pay.
+ * The public snapshot keeps this under `rewards`, not on the root.
+ * A root copy is accepted so an older feed still works.
+ */
+export function stakeRewardFloor(body: unknown, settled: number): number | null {
+  if (!Number.isInteger(settled) || settled < 0) return null;
+  const row = body as { firstFundableEpoch?: unknown; rewards?: { firstFundableEpoch?: unknown } } | null;
+  const first = wholeEpoch(row?.firstFundableEpoch) ?? wholeEpoch(row?.rewards?.firstFundableEpoch);
+  if (first == null || first > settled) return null;
+  return first;
+}
+
+function wholeEpoch(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return null;
+  return value;
+}
+
 async function rewardFloor(settled: number): Promise<number> {
   try {
     const res = await fetch("https://hemistake.hemi.xyz/v1/snapshot");
     if (res.ok) {
-      const body = (await res.json()) as { firstFundableEpoch?: number };
-      const first = body.firstFundableEpoch;
-      if (Number.isInteger(first) && first != null && first >= 0 && first <= settled) return first;
+      const first = stakeRewardFloor(await res.json(), settled);
+      if (first != null) return first;
     }
   } catch {
     // The on-chain window below still covers the funded epochs.
   }
   return Math.max(0, settled - 240);
+}
+
+/** claimFrom reverts unless the caller is the position holder. */
+function asHolder(holder: string): { from: string } {
+  return { from: holder };
 }
 
 async function fitClaim(
@@ -380,8 +402,8 @@ async function fitClaim(
   let end = to;
   while (end >= from) {
     try {
-      const cursor = BigInt(await rewards.claimFrom.staticCall(tokenId, holder, from, end, 0));
-      if (cursor === 0n) return end;
+      await rewards.claimFrom.staticCall(tokenId, holder, from, end, 0, asHolder(holder));
+      return end;
     } catch {
       // A revert means this span cannot be claimed as one call.
     }
@@ -408,22 +430,26 @@ export async function claimStake(tokenId: bigint): Promise<string> {
     const fitted = await fitClaim(rewards, tokenId, holder, from, Math.min(settled, from + span - 1));
     if (fitted == null) {
       const rows = (await lens.claimableByToken(tokenId, holder, from, from)) as RewardRow[];
-      let moved = false;
       for (const row of rows) {
         if (row.claimable === 0n) continue;
-        await rewards.claimToken.staticCall(tokenId, holder, row.token, from, from);
+        await rewards.claimToken.staticCall(tokenId, holder, row.token, from, from, asHolder(holder));
         last = await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "claimToken", [tokenId, holder, row.token, from, from]);
-        moved = true;
         sent += 1;
       }
-      if (!moved) throw new Error("The reward contract would not settle this claim.");
+      // An empty epoch the contract will not quote is not this lock's rewards.
       from += 1;
       continue;
     }
     const rows = (await lens.claimableByToken(tokenId, holder, from, fitted)) as RewardRow[];
     if (rows.some((row) => row.claimable > 0n)) {
-      last = await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "claimFrom", [tokenId, holder, from, fitted, 0]);
-      sent += 1;
+      let tokenStart = 0n;
+      for (let page = 0; page < 4 && sent < 6; page += 1) {
+        const cursor = BigInt(await rewards.claimFrom.staticCall(tokenId, holder, from, fitted, tokenStart, asHolder(holder)));
+        last = await hemiCall(VE_HEMI_REWARDS, rewardsAbi, "claimFrom", [tokenId, holder, from, fitted, tokenStart]);
+        sent += 1;
+        if (cursor === 0n || cursor === tokenStart) break;
+        tokenStart = cursor;
+      }
     }
     from = fitted + 1;
   }
